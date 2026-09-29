@@ -1,0 +1,6 @@
+{
+  "name": "Nidaamka Xisaabaadka Dukaanka Teleefannada - Shariif & Zakariye",
+  "description": "Nidaamka xisaabeedka dukaanka teleefannada gacan-ku-galka ah ee shuraakada Shariif iyo Zakariye: Maamulka lafaha (capital), iibka, iyo faa'iidada wadaagga ah.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

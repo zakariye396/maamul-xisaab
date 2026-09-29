@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nidaamka Xisaabaadka Dukaanka Teleefannada - Shariif & Zakariye</title>
+    <meta name="description" content="Nidaamka xisaabeedka dukaanka teleefannada gacan-ku-galka ah ee shuraakada Shariif iyo Zakariye: Maamulka lafaha (capital), iibka, iyo faa'iidada wadaagga ah." />
+    <meta property="og:title" content="Nidaamka Xisaabaadka Dukaanka Teleefannada - Shariif & Zakariye" />
+    <meta property="og:description" content="Nidaamka xisaabeedka dukaanka teleefannada gacan-ku-galka ah ee shuraakada Shariif iyo Zakariye: Maamulka lafaha (capital), iibka, iyo faa'iidada wadaagga ah." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+      (function() {
+        try {
+          var originalFetch = typeof window !== 'undefined' && window.fetch ? window.fetch.bind(window) : null;
+          var activeFetch = originalFetch;
+
+          var fetchDesc = {
+            get: function() {
+              return activeFetch;
+            },
+            set: function(fn) {
+              activeFetch = fn;
+            },
+            configurable: true,
+            enumerable: true
+          };
+
+          try {
+            Object.defineProperty(window, 'fetch', fetchDesc);
+          } catch (e1) {}
+
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            try {
+              Object.defineProperty(Window.prototype, 'fetch', fetchDesc);
+            } catch (e2) {}
+          }
+
+          if (typeof globalThis !== 'undefined' && globalThis !== window) {
+            try {
+              Object.defineProperty(globalThis, 'fetch', fetchDesc);
+            } catch (e3) {}
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
