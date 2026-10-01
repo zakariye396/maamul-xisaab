@@ -12,13 +12,13 @@ module.exports = {
       max_memory_restart: '500M',
       env: {
         NODE_ENV: 'production',
-        PORT: 3000,
+        PORT: 3001,
         HOST: '127.0.0.1',
         DB_DIR: './data',
       },
       env_production: {
         NODE_ENV: 'production',
-        PORT: 3000,
+        PORT: 3001,
         HOST: '127.0.0.1',
         DB_DIR: '/data',
       },

@@ -3,8 +3,12 @@ import {
   PlusCircle,
   Menu,
   TrendingUp,
+  LogOut,
+  KeyRound,
+  ShieldCheck,
+  User as UserIcon,
 } from 'lucide-react';
-import { AccountingSummary, Partner } from '../types/accounting';
+import { AccountingSummary, Partner, SafeUser } from '../types/accounting';
 import { NavigationTab } from './Sidebar';
 
 interface HeaderProps {
@@ -13,21 +17,26 @@ interface HeaderProps {
   activeTab: NavigationTab;
   setActiveTab: (tab: NavigationTab) => void;
   activeUser: Partner | null;
+  currentUser: SafeUser | null;
   onOpenAuth: () => void;
+  onOpenChangePassword: () => void;
+  onLogout: () => void;
   onOpenAddPhone: () => void;
   onToggleMobileMenu: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   summary,
-  partners,
   activeTab,
   setActiveTab,
-  activeUser,
-  onOpenAuth,
+  currentUser,
+  onOpenChangePassword,
+  onLogout,
   onOpenAddPhone,
   onToggleMobileMenu,
 }) => {
+  const isAdmin = currentUser?.role === 'admin';
+
   return (
     <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-xs">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5">
@@ -73,12 +82,16 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'Kharashaadka Dukaanka (Expenses)'
                   : activeTab === 'reports'
                   ? 'Warbixinnada Maaliyadeed (P&L Reports)'
+                  : activeTab === 'users'
+                  ? 'Maamulka Isticmaalayaasha (Users)'
+                  : activeTab === 'audit'
+                  ? 'Diiwaanka Dhacdooyinka (Audit Log)'
                   : 'Database & SQL Architecture'}
               </h2>
             </div>
           </div>
 
-          {/* Clean Top Header Key Indicators (Section 17: Zakariye Capital, Shariif Capital, Business Profit) */}
+          {/* Clean Top Header Key Indicators (Zakariye Capital, Shariif Capital, Business Profit) */}
           <div className="hidden md:flex items-center gap-2.5">
             {/* Zakariye Capital */}
             <div
@@ -126,22 +139,45 @@ export const Header: React.FC<HeaderProps> = ({
               <span>+ Teleefan Qabo</span>
             </button>
 
-            {/* Active User Switcher Pill */}
-            <button
-              onClick={onOpenAuth}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-slate-50 transition cursor-pointer"
-              title="Beddel qofka galay nidaamka"
-            >
+            {/* User badge with quick actions */}
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs">
               <div
-                className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white"
-                style={{ backgroundColor: activeUser ? activeUser.avatarColor : '#3B82F6' }}
+                className={`w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-black text-white ${
+                  isAdmin ? 'bg-indigo-600' : 'bg-slate-700'
+                }`}
+                title={currentUser ? `${currentUser.fullName} (${currentUser.role})` : 'User'}
               >
-                {activeUser ? activeUser.name[0] : 'U'}
+                {currentUser?.fullName[0] || currentUser?.username[0]?.toUpperCase() || 'U'}
               </div>
-              <span className="text-xs font-bold text-slate-700 hidden sm:inline">
-                {activeUser ? activeUser.name : 'Switch'}
+
+              <span className="font-bold text-slate-800 hidden sm:inline px-1">
+                {currentUser?.fullName?.split(' ')[0] || currentUser?.username || 'User'}
               </span>
-            </button>
+
+              <span
+                className={`text-[9px] px-1.5 py-0.2 rounded font-extrabold hidden md:inline uppercase ${
+                  isAdmin ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-700'
+                }`}
+              >
+                {currentUser?.role || 'staff'}
+              </span>
+
+              <button
+                onClick={onOpenChangePassword}
+                className="p-1 rounded-lg hover:bg-white text-slate-500 hover:text-amber-600 transition cursor-pointer"
+                title="Beddel Furaha Sirta ah"
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                onClick={onLogout}
+                className="p-1 rounded-lg hover:bg-white text-slate-500 hover:text-rose-600 transition cursor-pointer"
+                title="Ka bax nidaamka (Log Out)"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

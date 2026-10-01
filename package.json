@@ -13,6 +13,7 @@
     "db:backup": "tsx server/backup.ts",
     "db:restore": "tsx server/restore.ts",
     "db:health": "tsx server/health.ts",
+    "db:setup": "tsx server/setup.ts",
     "db:seed": "tsx server/seed.ts"
   },
   "dependencies": {

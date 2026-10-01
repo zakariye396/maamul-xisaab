@@ -10,12 +10,15 @@ import { TransactionsView } from './components/TransactionsView';
 import { ExpensesView } from './components/ExpensesView';
 import { ReportsView } from './components/ReportsView';
 import { SettingsView } from './components/SettingsView';
+import { UsersManagementView } from './components/UsersManagementView';
+import { AuditLogsView } from './components/AuditLogsView';
+import { LoginPage } from './components/LoginPage';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 
 import { AddPhoneModal } from './components/AddPhoneModal';
 import { SellPhoneModal } from './components/SellPhoneModal';
 import { EditPhoneModal } from './components/EditPhoneModal';
 import { ReceiptModal } from './components/ReceiptModal';
-import { AuthModal } from './components/AuthModal';
 
 import { INITIAL_PARTNERS } from './data/seedData';
 import { calculateSummary } from './services/accountingService';
@@ -26,24 +29,32 @@ import {
   PhoneRecord,
   TransactionRecord,
   WithdrawalRecord,
+  SafeUser,
 } from './types/accounting';
-import { CheckCircle2, AlertCircle, X } from 'lucide-react';
+import { CheckCircle2, AlertCircle, X, ShieldCheck, KeyRound, LogOut } from 'lucide-react';
 
 export default function App() {
-  const [partners, setPartners] = useState<Partner[]>(INITIAL_PARTNERS);
-  const [activeUser, setActiveUser] = useState<Partner | null>(INITIAL_PARTNERS[0]); // Default Zakariye
+  // Authentication & Session State
+  const [currentUser, setCurrentUser] = useState<SafeUser | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(() => {
     return typeof window !== 'undefined' ? localStorage.getItem('phone_hub_auth_token') : null;
   });
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
-  // Core State (authoritative from SQLite backend)
+  // Business & Partners State
+  const [partners, setPartners] = useState<Partner[]>(INITIAL_PARTNERS);
+  const [activeUser, setActiveUser] = useState<Partner | null>(null);
+
+  // Core Accounting Data (authoritative from SQLite backend)
   const [phones, setPhones] = useState<PhoneRecord[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRecord[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // UI state
+  // Navigation & UI state
   const [activeTab, setActiveTab] = useState<NavigationTab>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -52,9 +63,8 @@ export default function App() {
   const [phoneToSell, setPhoneToSell] = useState<PhoneRecord | null>(null);
   const [phoneToEdit, setPhoneToEdit] = useState<PhoneRecord | null>(null);
   const [phoneForReceipt, setPhoneForReceipt] = useState<PhoneRecord | null>(null);
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
 
-  // Toast
+  // Toast Alerts
   const [toastMessage, setToastMessage] = useState<{ text: string; isError?: boolean } | null>(null);
 
   const showToast = (text: string, isError = false) => {
@@ -62,7 +72,7 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Helper for authenticated requests
+  // Helper for authenticated requests (Bearer token + Cookie)
   const getAuthHeaders = (): HeadersInit => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) {
@@ -71,16 +81,50 @@ export default function App() {
     return headers;
   };
 
+  // Session expiry handler (triggers when a 401 is received from backend)
+  const handleSessionExpired = (message?: string) => {
+    localStorage.removeItem('phone_hub_auth_token');
+    setAuthToken(null);
+    setCurrentUser(null);
+    setActiveUser(null);
+    setPhones([]);
+    setExpenses([]);
+    setWithdrawals([]);
+    setTransactions([]);
+    setSessionExpiredMessage(
+      message || 'Fadlan dib u gal nidaamka. Session-kaagu wuu dhacay ama ma shaqaynayo (Session expired).'
+    );
+  };
+
   // 1. Fetch Authoritative Data from Persistent SQLite Database
-  const fetchAllData = async () => {
+  const fetchAllData = async (tokenOverride?: string) => {
+    const currentToken = tokenOverride || authToken;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (currentToken) {
+      headers['Authorization'] = `Bearer ${currentToken}`;
+    }
+
+    setIsLoading(true);
     try {
       const [phonesRes, expRes, wdrRes, txnRes, partnersRes] = await Promise.all([
-        fetch('/api/phones'),
-        fetch('/api/expenses'),
-        fetch('/api/withdrawals'),
-        fetch('/api/transactions'),
-        fetch('/api/partners'),
+        fetch('/api/phones', { headers, credentials: 'include' }),
+        fetch('/api/expenses', { headers, credentials: 'include' }),
+        fetch('/api/withdrawals', { headers, credentials: 'include' }),
+        fetch('/api/transactions', { headers, credentials: 'include' }),
+        fetch('/api/partners', { headers, credentials: 'include' }),
       ]);
+
+      // Check if unauthenticated (401)
+      if (
+        phonesRes.status === 401 ||
+        expRes.status === 401 ||
+        wdrRes.status === 401 ||
+        txnRes.status === 401 ||
+        partnersRes.status === 401
+      ) {
+        handleSessionExpired();
+        return;
+      }
 
       if (phonesRes.ok) {
         const json = await phonesRes.json();
@@ -124,35 +168,99 @@ export default function App() {
     }
   };
 
-  // Check auth session and load database records on mount
+  // Check auth session on startup
   useEffect(() => {
-    const initApp = async () => {
-      if (authToken) {
-        try {
-          const res = await fetch('/api/auth/me', {
-            headers: { Authorization: `Bearer ${authToken}` },
-          });
+    const checkAuthStatus = async () => {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (authToken) {
+          headers['Authorization'] = `Bearer ${authToken}`;
+        }
+
+        const res = await fetch('/api/auth/me', {
+          headers,
+          credentials: 'include',
+        });
+
+        if (res.ok) {
           const data = await res.json();
           if (data.authenticated && data.user) {
-            const currentPartner = partners.find((p) => p.id === data.user.partnerId) || null;
-            setActiveUser(currentPartner);
+            setCurrentUser(data.user);
+            const partner = data.user.partnerId ? INITIAL_PARTNERS.find((p) => p.id === data.user.partnerId) || null : null;
+            setActiveUser(partner || INITIAL_PARTNERS[0]);
+            await fetchAllData(authToken || undefined);
+            setIsAuthChecking(false);
+            return;
           }
-        } catch (e) {
-          // Token expired or invalid
+        }
+
+        // If not authenticated or token invalid
+        if (authToken) {
           localStorage.removeItem('phone_hub_auth_token');
           setAuthToken(null);
         }
+        setCurrentUser(null);
+      } catch (e) {
+        console.error('Auth verification error:', e);
+        if (authToken) {
+          localStorage.removeItem('phone_hub_auth_token');
+          setAuthToken(null);
+        }
+        setCurrentUser(null);
+      } finally {
+        setIsAuthChecking(false);
       }
-      await fetchAllData();
     };
 
-    initApp();
-  }, [authToken]);
+    checkAuthStatus();
+  }, []);
 
   // Derived Financial Summary directly from active state
   const summary = useMemo(() => {
     return calculateSummary(phones, expenses, withdrawals);
   }, [phones, expenses, withdrawals]);
+
+  // Login handler
+  const handleLoginSuccess = async (token: string, user: SafeUser) => {
+    setAuthToken(token);
+    localStorage.setItem('phone_hub_auth_token', token);
+    setCurrentUser(user);
+    setSessionExpiredMessage(null);
+
+    const currentPartner = user.partnerId ? partners.find((p) => p.id === user.partnerId) || null : null;
+    setActiveUser(currentPartner || partners[0]);
+
+    setActiveTab('dashboard');
+    showToast(`Ku soo dhowow nidaamka, ${user.fullName}!`);
+    await fetchAllData(token);
+  };
+
+  // Logout handler
+  const handleLogout = async () => {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+      });
+    } catch (e) {
+      console.error('Logout error:', e);
+    } finally {
+      localStorage.removeItem('phone_hub_auth_token');
+      setAuthToken(null);
+      setCurrentUser(null);
+      setActiveUser(null);
+      setPhones([]);
+      setExpenses([]);
+      setWithdrawals([]);
+      setTransactions([]);
+      showToast('Waa lagaa saaray nidaamka si guul leh (Logged out).');
+    }
+  };
 
   // ----------------- CRUD HANDLERS WITH PERSISTENT BACKEND -----------------
 
@@ -161,8 +269,14 @@ export default function App() {
       const res = await fetch('/api/phones', {
         method: 'POST',
         headers: getAuthHeaders(),
+        credentials: 'include',
         body: JSON.stringify(phoneData),
       });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
 
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -170,7 +284,6 @@ export default function App() {
         return;
       }
 
-      // Refresh authoritative data from database
       await fetchAllData();
       showToast(data.message || `Teleefanka ${data.phone.model} si guul leh ayaa loogu qoray database-ka!`);
     } catch (err: any) {
@@ -193,8 +306,14 @@ export default function App() {
       const res = await fetch(`/api/phones/${phoneId}/sell`, {
         method: 'POST',
         headers: getAuthHeaders(),
+        credentials: 'include',
         body: JSON.stringify(saleData),
       });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
 
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -202,22 +321,27 @@ export default function App() {
         return;
       }
 
+      setPhoneToSell(null);
       await fetchAllData();
-      showToast(
-        `Iibku wuu guuleystay! Faa'iido: +$${data.profitGenerated} | Lafaha dib u soo noqday (${data.ownerPartner}): $${data.returnedCapital}`
-      );
-    } catch (err: any) {
+      showToast(`Teleefanka si guul leh ayaa loo iibiyay! Faa'iido: +$${data.profitGenerated}`);
+    } catch (err) {
       showToast('Khalad xagga server-ka ah ayaa dhacay', true);
     }
   };
 
-  const handleUpdatePhone = async (updatedPhone: PhoneRecord) => {
+  const handleUpdatePhone = async (phoneData: PhoneRecord) => {
     try {
-      const res = await fetch(`/api/phones/${updatedPhone.id}`, {
+      const res = await fetch(`/api/phones/${phoneData.id}`, {
         method: 'PUT',
         headers: getAuthHeaders(),
-        body: JSON.stringify(updatedPhone),
+        credentials: 'include',
+        body: JSON.stringify(phoneData),
       });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
 
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -225,50 +349,62 @@ export default function App() {
         return;
       }
 
+      setPhoneToEdit(null);
       await fetchAllData();
-      showToast(`Xogta ${updatedPhone.model} waa lagu cusboonaysiiyay database-ka`);
+      showToast('Xogta teleefanka waa lagu cusboonaysiiyay database-ka');
     } catch (err) {
       showToast('Khalad xagga server-ka ah ayaa dhacay', true);
     }
   };
 
-  const handleDeletePhone = async (phoneId: string) => {
-    if (confirm('Ma hubtaa inaad tirtirto teleefankan database-ka?')) {
-      try {
-        const res = await fetch(`/api/phones/${phoneId}`, {
-          method: 'DELETE',
-          headers: getAuthHeaders(),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          showToast(data.error || 'Qalad ayaa ka dhacay tirtirista', true);
-          return;
-        }
-
-        await fetchAllData();
-        showToast('Teleefanka waa laga tirtiray database-ka');
-      } catch (err) {
-        showToast('Khalad xagga server-ka ah ayaa dhacay', true);
-      }
-    }
-  };
-
-  const handleAddExpense = async (expData: Omit<ExpenseRecord, 'id'>) => {
+  const handleDeletePhone = async (id: string) => {
     try {
-      const res = await fetch('/api/expenses', {
-        method: 'POST',
+      const res = await fetch(`/api/phones/${id}`, {
+        method: 'DELETE',
         headers: getAuthHeaders(),
-        body: JSON.stringify(expData),
+        credentials: 'include',
       });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
 
       const data = await res.json();
       if (!res.ok || !data.success) {
-        showToast(data.error || 'Qalad ayaa ka dhacay diiwaangelinta kharashka', true);
+        showToast(data.error || 'Qalad ayaa ka dhacay tirtirista', true);
         return;
       }
 
       await fetchAllData();
-      showToast(`Kharashka $${expData.amount} waa lagu keydiyay database-ka`);
+      showToast('Teleefanka waa laga tirtiray database-ka');
+    } catch (err) {
+      showToast('Khalad xagga server-ka ah ayaa dhacay', true);
+    }
+  };
+
+  const handleAddExpense = async (expenseData: Omit<ExpenseRecord, 'id'>) => {
+    try {
+      const res = await fetch('/api/expenses', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        credentials: 'include',
+        body: JSON.stringify(expenseData),
+      });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        showToast(data.error || 'Qalad ayaa ka dhacay qorista kharashka', true);
+        return;
+      }
+
+      await fetchAllData();
+      showToast(`Kharashka $${expenseData.amount} waa lagu keydiyay database-ka`);
     } catch (err) {
       showToast('Khalad xagga server-ka ah ayaa dhacay', true);
     }
@@ -279,7 +415,14 @@ export default function App() {
       const res = await fetch(`/api/expenses/${id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
+        credentials: 'include',
       });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
+
       const data = await res.json();
       if (!res.ok || !data.success) {
         showToast(data.error || 'Qalad ayaa ka dhacay tirtirista', true);
@@ -287,7 +430,7 @@ export default function App() {
       }
 
       await fetchAllData();
-      showToast('Kharashka waa laga tirtiray database-ka');
+      showToast('Kharashka waa la tirtiray');
     } catch (err) {
       showToast('Khalad xagga server-ka ah ayaa dhacay', true);
     }
@@ -298,8 +441,14 @@ export default function App() {
       const res = await fetch('/api/withdrawals', {
         method: 'POST',
         headers: getAuthHeaders(),
+        credentials: 'include',
         body: JSON.stringify(wdrData),
       });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
 
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -316,13 +465,23 @@ export default function App() {
   };
 
   const handleResetData = async () => {
-    if (confirm("Ma hubtaa inaad dib ugu celiso xogtii rasmiga ahayd ee tijaabada ee database-ka?")) {
+    if (confirm('Ma hubtaa inaad dib ugu celiso xogtii rasmiga ahayd ee tijaabada ee database-ka?')) {
       try {
-        const res = await fetch('/api/reset', { method: 'POST', headers: getAuthHeaders() });
+        const res = await fetch('/api/reset', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          credentials: 'include',
+        });
+
+        if (res.status === 401) {
+          handleSessionExpired();
+          return;
+        }
+
         const data = await res.json();
         if (data.success) {
           await fetchAllData();
-          showToast(data.message || "Xogtii asalka ahayd ee tijaabada ayaa dib loo soo celiyay");
+          showToast(data.message || 'Xogtii asalka ahayd ee tijaabada ayaa dib loo soo celiyay');
         }
       } catch (e) {
         showToast('Qalad ayaa ka dhacay dib u celinta database-ka', true);
@@ -332,7 +491,17 @@ export default function App() {
 
   const handleLoadTestCase = async () => {
     try {
-      const res = await fetch('/api/reset', { method: 'POST', headers: getAuthHeaders() });
+      const res = await fetch('/api/reset', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        credentials: 'include',
+      });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
+
       const data = await res.json();
       if (data.success) {
         await fetchAllData();
@@ -344,28 +513,6 @@ export default function App() {
     }
   };
 
-  const handleLoginSuccess = (user: Partner | null, token: string) => {
-    setActiveUser(user);
-    setAuthToken(token);
-    localStorage.setItem('phone_hub_auth_token', token);
-    showToast(`Guul: Waxaa galay ${user ? user.name : 'Maamul Guud (Admin)'}!`);
-  };
-
-  const handleLogout = async () => {
-    try {
-      if (authToken) {
-        await fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
-      }
-    } catch (e) {}
-    localStorage.removeItem('phone_hub_auth_token');
-    setAuthToken(null);
-    setActiveUser(null);
-    showToast('Waa lagaa saaray nidaamka si guul leh (Logged out)');
-  };
-
   const handleTabChange = (tab: NavigationTab) => {
     if (tab === 'add-phone') {
       setIsAddModalOpen(true);
@@ -374,6 +521,39 @@ export default function App() {
       setActiveTab(tab);
     }
   };
+
+  // ----------------- LOADING SPLASH SCREEN -----------------
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-white">
+        <div className="flex flex-col items-center gap-4 text-center max-w-sm animate-in fade-in duration-300">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-xl shadow-blue-500/20 ring-4 ring-blue-500/20">
+            <ShieldCheck className="w-9 h-9 text-white animate-pulse" />
+          </div>
+          <div>
+            <h2 className="text-xl font-black tracking-tight">Phone Trading Hub</h2>
+            <p className="text-xs text-slate-400 mt-1">Xaqiijinta nidaamka amniga & server-ka...</p>
+          </div>
+          <div className="w-8 h-8 border-3 border-blue-500/20 border-t-blue-500 rounded-full animate-spin mt-2" />
+        </div>
+      </div>
+    );
+  }
+
+  // ----------------- REQUIRE AUTHENTICATION -----------------
+  // If user is not authenticated, render ONLY the Login Page!
+  // No accounting dashboard, inventory, or financial data is exposed.
+  if (!currentUser) {
+    return (
+      <LoginPage
+        onLoginSuccess={handleLoginSuccess}
+        sessionExpiredMessage={sessionExpiredMessage}
+      />
+    );
+  }
+
+  // ----------------- MAIN AUTHENTICATED APPLICATION -----------------
+  const isAdmin = currentUser.role === 'admin';
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row text-slate-900">
@@ -402,7 +582,9 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={handleTabChange}
         activeUser={activeUser}
-        onOpenAuth={() => setIsAuthOpen(true)}
+        currentUser={currentUser}
+        onOpenAuth={() => {}}
+        onOpenChangePassword={() => setIsChangePasswordOpen(true)}
         onLogout={handleLogout}
         inStockCount={summary.phonesInStock}
         totalPhonesCount={summary.totalPhones}
@@ -437,6 +619,12 @@ export default function App() {
                 { id: 'expenses', label: 'Expenses (Kharash)' },
                 { id: 'reports', label: 'Reports' },
                 { id: 'settings', label: 'Database & SQL' },
+                ...(isAdmin
+                  ? [
+                      { id: 'users', label: 'Users (Maamulka)' },
+                      { id: 'audit', label: 'Audit Logs' },
+                    ]
+                  : []),
               ].map((item) => (
                 <button
                   key={item.id}
@@ -456,6 +644,35 @@ export default function App() {
                 </button>
               ))}
             </div>
+
+            {/* Mobile Footer Profile */}
+            <div className="p-3 border-t border-slate-800 bg-slate-950">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-bold text-white truncate">{currentUser.fullName}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">
+                  {currentUser.role.toUpperCase()}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  onClick={() => {
+                    setIsChangePasswordOpen(true);
+                    setMobileMenuOpen(false);
+                  }}
+                  className="p-1.5 rounded-lg bg-slate-900 text-[11px] font-bold text-slate-300 flex items-center justify-center gap-1"
+                >
+                  <KeyRound className="w-3 h-3 text-amber-400" />
+                  <span>Furaha</span>
+                </button>
+                <button
+                  onClick={handleLogout}
+                  className="p-1.5 rounded-lg bg-rose-950/40 text-[11px] font-bold text-rose-300 flex items-center justify-center gap-1"
+                >
+                  <LogOut className="w-3 h-3 text-rose-400" />
+                  <span>Ka bax</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -468,7 +685,10 @@ export default function App() {
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           activeUser={activeUser}
-          onOpenAuth={() => setIsAuthOpen(true)}
+          currentUser={currentUser}
+          onOpenAuth={() => {}}
+          onOpenChangePassword={() => setIsChangePasswordOpen(true)}
+          onLogout={handleLogout}
           onOpenAddPhone={() => setIsAddModalOpen(true)}
           onToggleMobileMenu={() => setMobileMenuOpen(true)}
         />
@@ -566,12 +786,20 @@ export default function App() {
               onLoadTestCase={handleLoadTestCase}
               onImportJson={async (imported: any) => {
                 if (imported && Array.isArray(imported.phones)) {
-                  // Reload directly from database
                   await fetchAllData();
                   showToast('Database waa la cusboonaysiiyay');
                 }
               }}
             />
+          )}
+
+          {/* Admin Only Views */}
+          {activeTab === 'users' && isAdmin && (
+            <UsersManagementView currentUser={currentUser} authToken={authToken || ''} />
+          )}
+
+          {activeTab === 'audit' && isAdmin && (
+            <AuditLogsView authToken={authToken || ''} />
           )}
         </main>
       </div>
@@ -609,12 +837,13 @@ export default function App() {
         onClose={() => setPhoneForReceipt(null)}
       />
 
-      <AuthModal
-        isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
-        partners={partners}
-        activeUser={activeUser}
-        onLoginSuccess={handleLoginSuccess}
+      {/* Password Change Modal */}
+      <ChangePasswordModal
+        currentUser={currentUser}
+        authToken={authToken || ''}
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
+        onSuccess={(msg) => showToast(msg)}
       />
     </div>
   );

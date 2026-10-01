@@ -5,9 +5,17 @@ import { fileURLToPath } from 'url';
 import {
   initDatabase,
   getPartners,
-  authenticate,
-  verifySession,
-  revokeSession,
+  loginUser,
+  validateSession,
+  logoutUser,
+  changeUserPassword,
+  getUsers,
+  createUser,
+  updateUser,
+  resetUserPassword,
+  deleteUser,
+  getAuditLogs,
+  authenticate as authenticateLegacyPin,
   getPhones,
   getPhoneById,
   createPhoneAtomic,
@@ -25,52 +33,161 @@ import {
   checkDatabaseHealth,
   createDatabaseBackup,
   listDatabaseBackups,
+  getSessionTtlMs,
   DB_PATH,
 } from './server/database.ts';
+import { SafeUser } from './src/types/accounting.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize SQLite Schema safely on startup (opens existing db, does not wipe)
+// Initialize SQLite Schema & Default Admin safely on startup (never wipes)
 initDatabase();
 
-// Auth Middleware for protected endpoints
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+// ----------------- HELPER: COOKIE PARSER -----------------
+function parseCookies(cookieHeader?: string): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  if (!cookieHeader) return cookies;
+  cookieHeader.split(';').forEach((cookie) => {
+    const parts = cookie.split('=');
+    if (parts.length === 2) {
+      cookies[parts[0].trim()] = decodeURIComponent(parts[1].trim());
+    }
+  });
+  return cookies;
+}
+
+// ----------------- LOGIN BRUTE-FORCE RATE LIMITING -----------------
+interface RateLimitRecord {
+  count: number;
+  firstAttempt: number;
+  lockedUntil?: number;
+}
+const loginRateLimitMap = new Map<string, RateLimitRecord>();
+
+function checkLoginRateLimit(ip: string): { allowed: boolean; remainingSeconds?: number } {
+  const now = Date.now();
+  const record = loginRateLimitMap.get(ip);
+  if (!record) return { allowed: true };
+
+  if (record.lockedUntil && record.lockedUntil > now) {
+    const remainingSeconds = Math.ceil((record.lockedUntil - now) / 1000);
+    return { allowed: false, remainingSeconds };
+  }
+
+  // Reset window if older than 15 minutes
+  if (now - record.firstAttempt > 15 * 60 * 1000) {
+    loginRateLimitMap.delete(ip);
+    return { allowed: true };
+  }
+
+  return { allowed: true };
+}
+
+function recordLoginFailure(ip: string): void {
+  const now = Date.now();
+  const record = loginRateLimitMap.get(ip) || { count: 0, firstAttempt: now };
+  record.count += 1;
+  if (record.count >= 5) {
+    record.lockedUntil = now + 15 * 60 * 1000; // 15 minute temporary block
+  }
+  loginRateLimitMap.set(ip, record);
+}
+
+function resetLoginRateLimit(ip: string): void {
+  loginRateLimitMap.delete(ip);
+}
+
+// ----------------- AUTH & ROLE MIDDLEWARES -----------------
+
+export interface AuthenticatedRequest extends Request {
+  user?: SafeUser;
+  sessionToken?: string;
+}
+
+export function extractToken(req: Request): string | undefined {
+  // 1. Authorization header (Bearer token)
   const authHeader = req.headers.authorization;
-  if (!authHeader) {
+  if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
+    return authHeader.substring(7).trim();
+  }
+
+  // 2. Custom header
+  if (req.headers['x-session-token']) {
+    return String(req.headers['x-session-token']).trim();
+  }
+
+  // 3. HTTP Cookie
+  const cookies = parseCookies(req.headers.cookie);
+  if (cookies['session_token']) {
+    return cookies['session_token'].trim();
+  }
+
+  return undefined;
+}
+
+export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const token = extractToken(req);
+  if (!token) {
     return res.status(401).json({
       success: false,
-      error: 'Fadlan gal nidaamka (Authorization token required)!',
+      error: 'Fadlan gal nidaamka (Authentication required). Unauthorized access.',
     });
   }
 
-  const session = verifySession(authHeader);
-  if (!session.valid) {
+  const result = validateSession(token);
+  if (!result.valid || !result.user) {
     return res.status(401).json({
       success: false,
-      error: 'Session-kaagu wuu dhacay ama ma saxna. Fadlan dib u gal (Login)!',
+      error: result.error || 'Session-kaagu wuu dhacay ama ma saxna. Fadlan dib u gal (Session expired/invalid).',
     });
   }
 
-  (req as any).user = session;
+  req.user = result.user;
+  req.sessionToken = token;
   next();
 }
 
+export function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  requireAuth(req, res, () => {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Ma haysatid ogolaansho maamule (Admin privileges required). Forbidden.',
+      });
+    }
+    next();
+  });
+}
+
+// ----------------- MAIN EXPRESS APPLICATION -----------------
+
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = Number(process.env.PORT) || 3001;
   const HOST = process.env.HOST || '0.0.0.0';
 
   app.use(express.json());
 
-  // ----------------- SECURITY RESTRICTIONS -----------------
-  // Block any attempt to access database files, /data directory, backups, or environment secrets
+  // Security Headers Middleware
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+
+  // Block direct access to database files, backups, and environment secrets
   app.use((req, res, next) => {
     const url = req.url.toLowerCase();
     if (
       url.includes('/data/') ||
       url.endsWith('.db') ||
       url.endsWith('.sqlite') ||
+      url.endsWith('.sqlite3') ||
+      url.endsWith('.wal') ||
+      url.endsWith('.shm') ||
       url.endsWith('.env') ||
       url.includes('backups')
     ) {
@@ -79,63 +196,198 @@ async function startServer() {
     next();
   });
 
+  const getClientIp = (req: Request): string => {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string') return forwarded.split(',')[0].trim();
+    return req.socket.remoteAddress || '127.0.0.1';
+  };
+
   // ----------------- AUTHENTICATION API -----------------
+
+  // 1. Unified Login (Username + Password, or legacy partner PIN)
   app.post('/api/auth/login', (req, res) => {
-    const { partnerId, pin } = req.body;
-    if (!pin) {
-      return res.status(400).json({ success: false, error: 'Fadlan geli PIN-kaaga sirta ah!' });
+    const clientIp = getClientIp(req);
+    const userAgent = req.headers['user-agent'] || '';
+
+    // Check rate limit
+    const rateCheck = checkLoginRateLimit(clientIp);
+    if (!rateCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: `Isku dayo badan oo khalad ah. Fadlan sug ${rateCheck.remainingSeconds} ilbiriqsi ka hor inta aadan dib u tijaabin (Too many attempts. Locked for ${rateCheck.remainingSeconds}s)!`,
+      });
     }
 
-    const result = authenticate(partnerId, String(pin).trim());
-    if (!result.success) {
-      return res.status(401).json(result);
+    const { username, password, partnerId, pin } = req.body;
+
+    // Standard Username + Password Authentication
+    if (username !== undefined || password !== undefined) {
+      const result = loginUser(String(username || ''), String(password || ''), { ip: clientIp, userAgent });
+      if (!result.success || !result.session) {
+        recordLoginFailure(clientIp);
+        return res.status(401).json({ success: false, error: result.error });
+      }
+
+      resetLoginRateLimit(clientIp);
+
+      // Set HttpOnly Cookie
+      const maxAgeMs = getSessionTtlMs();
+      res.setHeader(
+        'Set-Cookie',
+        `session_token=${result.session.token}; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}; HttpOnly; SameSite=Lax${
+          process.env.NODE_ENV === 'production' ? '; Secure' : ''
+        }`
+      );
+
+      return res.json({
+        success: true,
+        message: `Soo dhowow, ${result.session.user.fullName}!`,
+        token: result.session.token,
+        user: result.session.user,
+        expiresAt: result.session.expiresAt,
+      });
     }
 
-    res.json({
-      success: true,
-      message: `Soo dhowow, ${result.session?.partnerName}!`,
-      session: result.session,
-    });
+    // Legacy PIN-based fallback for older partner switcher
+    if (pin !== undefined) {
+      const legacyResult = authenticateLegacyPin(partnerId, String(pin).trim());
+      if (!legacyResult.success || !legacyResult.session) {
+        recordLoginFailure(clientIp);
+        return res.status(401).json(legacyResult);
+      }
+
+      resetLoginRateLimit(clientIp);
+      return res.json({
+        success: true,
+        message: `Soo dhowow, ${legacyResult.session.partnerName}!`,
+        token: legacyResult.session.token,
+        session: legacyResult.session,
+      });
+    }
+
+    return res.status(400).json({ success: false, error: 'Fadlan geli username iyo password!' });
   });
 
-  app.get('/api/auth/me', (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
+  // 2. Current User Profile (/api/auth/me)
+  app.get('/api/auth/me', (req: AuthenticatedRequest, res) => {
+    const token = extractToken(req);
+    if (!token) {
       return res.json({ success: true, authenticated: false, user: null });
     }
 
-    const session = verifySession(authHeader);
-    if (!session.valid) {
+    const result = validateSession(token);
+    if (!result.valid || !result.user) {
       return res.json({ success: true, authenticated: false, user: null });
     }
 
     res.json({
       success: true,
       authenticated: true,
-      user: {
-        partnerId: session.partnerId,
-        partnerName: session.partnerName,
-        role: session.role,
-      },
+      user: result.user,
+      expiresAt: result.session?.expiresAt,
     });
   });
 
-  app.post('/api/auth/logout', (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader) {
-      revokeSession(authHeader);
+  // 3. Logout (/api/auth/logout)
+  app.post('/api/auth/logout', (req: AuthenticatedRequest, res) => {
+    const token = extractToken(req);
+    const clientIp = getClientIp(req);
+    if (token) {
+      logoutUser(token, { ip: clientIp });
     }
+
+    // Clear session cookie
+    res.setHeader('Set-Cookie', 'session_token=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax');
     res.json({ success: true, message: 'Waa lagaa saaray nidaamka si guul leh (Logged out)!' });
   });
 
-  // ----------------- PARTNERS API -----------------
-  app.get('/api/partners', (req, res) => {
+  // 4. Change Password (/api/auth/change-password)
+  app.post('/api/auth/change-password', requireAuth, (req: AuthenticatedRequest, res) => {
+    const { currentPassword, newPassword } = req.body;
+    const clientIp = getClientIp(req);
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, error: 'Fadlan geli furaha hadda jira iyo kan cusub!' });
+    }
+
+    const result = changeUserPassword(req.user!.id, String(currentPassword), String(newPassword), { ip: clientIp });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    res.json({ success: true, message: 'Furahaaga sirta ah si guul leh ayaa loo beddelay!' });
+  });
+
+  // ----------------- USER MANAGEMENT API (ADMIN ONLY) -----------------
+
+  app.get('/api/users', requireAdmin, (_req, res) => {
+    const users = getUsers();
+    res.json({ success: true, data: users });
+  });
+
+  app.post('/api/users', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const clientIp = getClientIp(req);
+    const result = createUser(req.body, req.user!, clientIp);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.status(201).json({ success: true, message: 'Isticmaalaha cusub si guul leh ayaa loo abuuray!', user: result.user });
+  });
+
+  app.put('/api/users/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const clientIp = getClientIp(req);
+    const id = Number(req.params.id);
+    const result = updateUser(id, req.body, req.user!, clientIp);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.json({ success: true, message: 'Xogta isticmaalaha waa la cusboonaysiiyay!', user: result.user });
+  });
+
+  app.post('/api/users/:id/reset-password', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const clientIp = getClientIp(req);
+    const id = Number(req.params.id);
+    const { newPassword } = req.body;
+    const result = resetUserPassword(id, String(newPassword || ''), req.user!, clientIp);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.json({ success: true, message: 'Furaha isticmaalaha si guul leh ayaa dib loogu dejiyay!' });
+  });
+
+  app.delete('/api/users/:id', requireAdmin, (req: AuthenticatedRequest, res) => {
+    const clientIp = getClientIp(req);
+    const id = Number(req.params.id);
+    const result = deleteUser(id, req.user!, clientIp);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.json({ success: true, message: 'Isticmaalaha waa laga tirtiray nidaamka!' });
+  });
+
+  // ----------------- AUDIT LOGS API (ADMIN ONLY) -----------------
+
+  app.get('/api/audit-logs', requireAdmin, (req, res) => {
+    const { action, search, limit, offset } = req.query;
+    const result = getAuditLogs({
+      action: action ? String(action) : undefined,
+      search: search ? String(search) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+    });
+    res.json({ success: true, data: result.logs, total: result.total });
+  });
+
+  // ----------------- PROTECTED ACCOUNTING ENDPOINTS -----------------
+
+  // Partners (Protected)
+  app.get('/api/partners', requireAuth, (_req, res) => {
     const partners = getPartners();
     res.json({ success: true, data: partners });
   });
 
-  // ----------------- PHONES (INVENTORY) API -----------------
-  app.get('/api/phones', (req, res) => {
+  // Phones Inventory (Protected)
+  app.get('/api/phones', requireAuth, (req, res) => {
     const { partnerId, status, search, imei } = req.query;
     const phones = getPhones({
       partnerId: partnerId ? Number(partnerId) : undefined,
@@ -146,7 +398,7 @@ async function startServer() {
     res.json({ success: true, data: phones, count: phones.length });
   });
 
-  app.get('/api/phones/:id', (req, res) => {
+  app.get('/api/phones/:id', requireAuth, (req, res) => {
     const phone = getPhoneById(req.params.id);
     if (!phone) {
       return res.status(404).json({ success: false, error: 'Teleefankan lama helin!' });
@@ -154,8 +406,8 @@ async function startServer() {
     res.json({ success: true, data: phone });
   });
 
-  // Purchase / Add Phone (Qabasho)
-  app.post('/api/phones', (req, res) => {
+  // Purchase / Add Phone (Protected)
+  app.post('/api/phones', requireAuth, (req, res) => {
     const {
       imei,
       brand,
@@ -229,8 +481,8 @@ async function startServer() {
     });
   });
 
-  // Update Phone
-  app.put('/api/phones/:id', (req, res) => {
+  // Update Phone (Protected)
+  app.put('/api/phones/:id', requireAuth, (req, res) => {
     const { id } = req.params;
     const result = updatePhone(id, req.body);
     if (!result.success) {
@@ -245,8 +497,8 @@ async function startServer() {
     });
   });
 
-  // Sell Phone (Iibinta Teleefanka - Atomic)
-  app.post('/api/phones/:id/sell', (req, res) => {
+  // Sell Phone (Protected)
+  app.post('/api/phones/:id/sell', requireAuth, (req, res) => {
     const { id } = req.params;
     const { salePrice, saleDate, customerName, customerPhone, paymentMethod, notes } = req.body;
 
@@ -280,8 +532,8 @@ async function startServer() {
     });
   });
 
-  // Delete Phone
-  app.delete('/api/phones/:id', (req, res) => {
+  // Delete Phone (Protected)
+  app.delete('/api/phones/:id', requireAuth, (req, res) => {
     try {
       const deleted = deletePhone(req.params.id);
       if (!deleted) {
@@ -294,13 +546,13 @@ async function startServer() {
     }
   });
 
-  // ----------------- EXPENSES API -----------------
-  app.get('/api/expenses', (req, res) => {
+  // Expenses (Protected)
+  app.get('/api/expenses', requireAuth, (_req, res) => {
     const expenses = getExpenses();
     res.json({ success: true, data: expenses });
   });
 
-  app.post('/api/expenses', (req, res) => {
+  app.post('/api/expenses', requireAuth, (req, res) => {
     const { category, amount, date, description, recordedBy } = req.body;
     const amountNum = Number(amount);
     if (!category || isNaN(amountNum) || amountNum <= 0) {
@@ -319,7 +571,7 @@ async function startServer() {
     res.status(201).json({ success: true, data: newExpense, summary });
   });
 
-  app.delete('/api/expenses/:id', (req, res) => {
+  app.delete('/api/expenses/:id', requireAuth, (req, res) => {
     try {
       const deleted = deleteExpense(req.params.id);
       if (!deleted) {
@@ -332,13 +584,13 @@ async function startServer() {
     }
   });
 
-  // ----------------- WITHDRAWALS API -----------------
-  app.get('/api/withdrawals', (req, res) => {
+  // Withdrawals (Protected)
+  app.get('/api/withdrawals', requireAuth, (_req, res) => {
     const withdrawals = getWithdrawals();
     res.json({ success: true, data: withdrawals });
   });
 
-  app.post('/api/withdrawals', (req, res) => {
+  app.post('/api/withdrawals', requireAuth, (req, res) => {
     const { partnerId, amount, date, reason, notes } = req.body;
     const amountNum = Number(amount);
     const pId = Number(partnerId) as 1 | 2;
@@ -359,8 +611,8 @@ async function startServer() {
     res.status(201).json({ success: true, data: newWdr, summary });
   });
 
-  // ----------------- TRANSACTIONS LEDGER API -----------------
-  app.get('/api/transactions', (req, res) => {
+  // Transactions Ledger (Protected)
+  app.get('/api/transactions', requireAuth, (req, res) => {
     const { type, partnerId } = req.query;
     const transactions = getTransactions({
       type: type ? String(type) : undefined,
@@ -369,46 +621,14 @@ async function startServer() {
     res.json({ success: true, data: transactions, count: transactions.length });
   });
 
-  // ----------------- ACCOUNTING SUMMARY API -----------------
-  app.get('/api/accounting/summary', (req, res) => {
+  // Accounting Summary (Protected)
+  app.get('/api/accounting/summary', requireAuth, (_req, res) => {
     const summary = getDatabaseSummary();
     res.json({ success: true, data: summary });
   });
 
-  // ----------------- DATABASE HEALTH & STATUS API -----------------
-  app.get('/api/database/health', (req, res) => {
-    const health = checkDatabaseHealth();
-    const statusCode = health.status === 'healthy' ? 200 : 503;
-    res.status(statusCode).json({ success: health.status === 'healthy', health });
-  });
-
-  app.get('/api/database/backups', (req, res) => {
-    const backups = listDatabaseBackups();
-    res.json({ success: true, data: backups, count: backups.length });
-  });
-
-  app.post('/api/database/backup', (req, res) => {
-    const result = createDatabaseBackup();
-    if (result.success) {
-      res.json({ success: true, message: 'Database backup created successfully', backup: result });
-    } else {
-      res.status(500).json({ success: false, error: result.error });
-    }
-  });
-
-  // ----------------- DEV ONLY / RESET API -----------------
-  app.post('/api/reset', (req, res) => {
-    seedInitialAccountingData();
-    const summary = getDatabaseSummary();
-    res.json({
-      success: true,
-      message: 'Database-ka waxaa dib loogu celiyay tijaabadii asalka ahayd (Zakariye $50, Shariif $80)!',
-      summary,
-    });
-  });
-
-  // ----------------- AUDIT / METRICS API -----------------
-  app.get('/api/audit', (req, res) => {
+  // Audit Metrics (Protected)
+  app.get('/api/audit', requireAuth, (_req, res) => {
     const health = checkDatabaseHealth();
     const summary = getDatabaseSummary();
     const phones = getPhones();
@@ -416,6 +636,7 @@ async function startServer() {
     const expenses = getExpenses();
     const withdrawals = getWithdrawals();
     const partners = getPartners();
+    const users = getUsers();
 
     res.json({
       success: true,
@@ -427,6 +648,7 @@ async function startServer() {
         integrityCheck: health.integrity,
         tables: health.tables,
         counts: {
+          users: users.length,
           partners: partners.length,
           phones: phones.length,
           transactions: transactions.length,
@@ -447,7 +669,41 @@ async function startServer() {
     });
   });
 
-  // Serve Vite in development or static in production
+  // ----------------- ADMIN ONLY DATABASE OPERATIONS -----------------
+
+  app.get('/api/database/backups', requireAdmin, (_req, res) => {
+    const backups = listDatabaseBackups();
+    res.json({ success: true, data: backups, count: backups.length });
+  });
+
+  app.post('/api/database/backup', requireAdmin, (_req, res) => {
+    const result = createDatabaseBackup();
+    if (result.success) {
+      res.json({ success: true, message: 'Database backup created successfully', backup: result });
+    } else {
+      res.status(500).json({ success: false, error: result.error });
+    }
+  });
+
+  app.post('/api/reset', requireAdmin, (_req, res) => {
+    seedInitialAccountingData();
+    const summary = getDatabaseSummary();
+    res.json({
+      success: true,
+      message: 'Database-ka waxaa dib loogu celiyay tijaabadii asalka ahayd (Zakariye $50, Shariif $80)!',
+      summary,
+    });
+  });
+
+  // ----------------- PUBLIC DATABASE HEALTH CHECK -----------------
+  // Safe for Nginx / uptime monitors (exposes health status without sensitive data)
+  app.get('/api/database/health', (_req, res) => {
+    const health = checkDatabaseHealth();
+    const statusCode = health.status === 'healthy' ? 200 : 503;
+    res.status(statusCode).json({ success: health.status === 'healthy', health });
+  });
+
+  // ----------------- FRONTEND SERVING -----------------
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -456,7 +712,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }

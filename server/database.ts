@@ -18,6 +18,9 @@ import {
   SaleRecord,
   TransactionRecord,
   WithdrawalRecord,
+  SafeUser,
+  UserRole,
+  AuditLogRecord,
 } from '../src/types/accounting.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -201,7 +204,7 @@ export function initDatabase(): void {
     );
   `);
 
-  // 7. Auth Sessions Table
+  // 7. Auth Sessions Table (Legacy PIN-based sessions)
   db.exec(`
     CREATE TABLE IF NOT EXISTS auth_sessions (
       token TEXT PRIMARY KEY,
@@ -210,6 +213,49 @@ export function initDatabase(): void {
       role TEXT NOT NULL,
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL
+    );
+  `);
+
+  // 8. Users Table (Real Server-side Username + Password Authentication)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      password_hash TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('admin', 'staff')),
+      partner_id INTEGER REFERENCES partners(id),
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_login_at TEXT
+    );
+  `);
+
+  // 9. Server Sessions Table (Cryptographically Secure Sessions with TTL)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT
+    );
+  `);
+
+  // 10. Audit Logs Table (Financial and Security Action Audit Trail)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      username TEXT NOT NULL,
+      action TEXT NOT NULL,
+      entity_type TEXT,
+      entity_id TEXT,
+      details TEXT,
+      ip_address TEXT,
+      created_at TEXT NOT NULL
     );
   `);
 
@@ -223,6 +269,11 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_transactions_partner ON transactions(partner_id);
     CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
     CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(sale_date);
+    CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
   `);
 
   // Ensure default partners exist only if missing
@@ -236,6 +287,9 @@ export function initDatabase(): void {
     insertPartner.run(2, 'Shariif', '#059669', '+252 61 500 0002', 'shariif@phonehub.so', 'Partner & Capital Owner', '5678');
     console.log('[DATABASE INIT] Seeded default partners (Zakariye & Shariif)');
   }
+
+  // Ensure default admin user and initial accounts exist
+  setupInitialUsers();
 
   // Check if phones already exist:
   const countPhones = (db.prepare('SELECT COUNT(*) as count FROM phones').get() as { count: number }).count;
@@ -497,6 +551,20 @@ export function restoreDatabaseBackup(backupFilename: string): { success: boolea
       db.exec('INSERT INTO withdrawals SELECT * FROM backup_source.withdrawals;');
       db.exec('INSERT INTO transactions SELECT * FROM backup_source.transactions;');
 
+      // Restore users & audit_logs if present in backup source
+      const backupTables = (
+        db.prepare("SELECT name FROM backup_source.sqlite_master WHERE type='table'").all() as { name: string }[]
+      ).map((r) => r.name);
+
+      if (backupTables.includes('users')) {
+        db.exec('DELETE FROM users;');
+        db.exec('INSERT INTO users SELECT * FROM backup_source.users;');
+      }
+      if (backupTables.includes('audit_logs')) {
+        db.exec('DELETE FROM audit_logs;');
+        db.exec('INSERT INTO audit_logs SELECT * FROM backup_source.audit_logs;');
+      }
+
       db.exec('COMMIT;');
     } catch (e) {
       db.exec('ROLLBACK;');
@@ -563,6 +631,9 @@ export function checkDatabaseHealth(): {
     const withdrawalsCount = (db.prepare('SELECT COUNT(*) as c FROM withdrawals;').get() as { c: number }).c;
     const transactionsCount = (db.prepare('SELECT COUNT(*) as c FROM transactions;').get() as { c: number }).c;
     const sessionsCount = (db.prepare('SELECT COUNT(*) as c FROM auth_sessions;').get() as { c: number }).c;
+    const usersCount = (db.prepare('SELECT COUNT(*) as c FROM users;').get() as { c: number }).c;
+    const activeSessionsCount = (db.prepare('SELECT COUNT(*) as c FROM sessions;').get() as { c: number }).c;
+    const auditLogsCount = (db.prepare('SELECT COUNT(*) as c FROM audit_logs;').get() as { c: number }).c;
 
     const stats = fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH) : { size: 0 };
     const isHealthy =
@@ -587,6 +658,9 @@ export function checkDatabaseHealth(): {
         withdrawals: withdrawalsCount,
         transactions: transactionsCount,
         auth_sessions: sessionsCount,
+        users: usersCount,
+        sessions: activeSessionsCount,
+        audit_logs: auditLogsCount,
       },
       totalPhones: phonesCount,
       totalTransactions: transactionsCount,
@@ -609,6 +683,642 @@ export function checkDatabaseHealth(): {
       timestamp: new Date().toISOString(),
     };
   }
+}
+
+// ----------------- PASSWORD SECURITY & HASHING (NIST/OWASP COMPLIANT) -----------------
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex');
+  return `scrypt$${salt}$${hash}`;
+}
+
+export function verifyPassword(password: string, storedHash: string): boolean {
+  if (!storedHash || !storedHash.startsWith('scrypt$')) return false;
+  const parts = storedHash.split('$');
+  if (parts.length !== 3) return false;
+  const salt = parts[1];
+  const originalHash = parts[2];
+  try {
+    const testHash = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(testHash, 'hex'), Buffer.from(originalHash, 'hex'));
+  } catch (e) {
+    return false;
+  }
+}
+
+export function getSessionTtlMs(): number {
+  const hours = process.env.SESSION_TTL_HOURS ? Number(process.env.SESSION_TTL_HOURS) : 24;
+  return (isNaN(hours) || hours <= 0 ? 24 : hours) * 60 * 60 * 1000;
+}
+
+// ----------------- AUDIT LOGGING SYSTEM -----------------
+export function addAuditLog(entry: {
+  userId?: number;
+  username: string;
+  action: string;
+  entityType?: string;
+  entityId?: string;
+  details?: string;
+  ipAddress?: string;
+}): void {
+  try {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO audit_logs (user_id, username, action, entity_type, entity_id, details, ip_address, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      entry.userId || null,
+      entry.username,
+      entry.action,
+      entry.entityType || null,
+      entry.entityId || null,
+      entry.details || null,
+      entry.ipAddress || null,
+      now
+    );
+  } catch (e) {
+    console.error('[AUDIT LOG ERROR]:', e);
+  }
+}
+
+export function getAuditLogs(filters?: {
+  action?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}): { logs: AuditLogRecord[]; total: number } {
+  let query = 'SELECT * FROM audit_logs WHERE 1=1';
+  let countQuery = 'SELECT COUNT(*) as total FROM audit_logs WHERE 1=1';
+  const params: any[] = [];
+
+  if (filters?.action && filters.action !== 'all') {
+    query += ' AND action = ?';
+    countQuery += ' AND action = ?';
+    params.push(filters.action);
+  }
+
+  if (filters?.search) {
+    const q = `%${filters.search.toLowerCase().trim()}%`;
+    query += ' AND (LOWER(username) LIKE ? OR LOWER(details) LIKE ? OR LOWER(entity_id) LIKE ?)';
+    countQuery += ' AND (LOWER(username) LIKE ? OR LOWER(details) LIKE ? OR LOWER(entity_id) LIKE ?)';
+    params.push(q, q, q);
+  }
+
+  const total = (db.prepare(countQuery).get(...params) as { total: number }).total;
+
+  query += ' ORDER BY created_at DESC';
+  const limit = filters?.limit ? Math.min(filters.limit, 100) : 50;
+  const offset = filters?.offset || 0;
+  query += ` LIMIT ${limit} OFFSET ${offset}`;
+
+  const rows = db.prepare(query).all(...params) as any[];
+  const logs: AuditLogRecord[] = rows.map((r) => ({
+    id: r.id,
+    userId: r.user_id || undefined,
+    username: r.username,
+    action: r.action,
+    entityType: r.entity_type || undefined,
+    entityId: r.entity_id || undefined,
+    details: r.details || undefined,
+    ipAddress: r.ip_address || undefined,
+    createdAt: r.created_at,
+  }));
+
+  return { logs, total };
+}
+
+// ----------------- DEFAULT ADMIN & SEED ACCOUNTS -----------------
+export function setupInitialUsers(): void {
+  const adminCount = (db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND is_active = 1").get() as { count: number }).count;
+  if (adminCount === 0) {
+    const adminUsername = (process.env.ADMIN_USERNAME || 'admin').trim();
+    const adminPassword = (process.env.ADMIN_PASSWORD || 'Admin1234!').trim();
+    const now = new Date().toISOString();
+    const hash = hashPassword(adminPassword);
+
+    const existing = db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(adminUsername) as any;
+    if (existing) {
+      db.prepare(`
+        UPDATE users SET password_hash = ?, role = 'admin', is_active = 1, updated_at = ? WHERE id = ?
+      `).run(hash, now, existing.id);
+    } else {
+      db.prepare(`
+        INSERT INTO users (username, password_hash, full_name, role, partner_id, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, 'admin', 1, 1, ?, ?)
+      `).run(adminUsername, hash, 'System Administrator (Zakariye)', now, now);
+    }
+    console.log(`[AUTH SETUP] Initial admin user "${adminUsername}" established.`);
+
+    addAuditLog({
+      username: 'SYSTEM',
+      action: 'SYSTEM_SETUP',
+      details: `Initialized default admin account: ${adminUsername}`,
+    });
+  }
+
+  // Also ensure staff account exists for instant testing of staff permissions
+  const staffCount = (db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'staff'").get() as { count: number }).count;
+  if (staffCount === 0) {
+    const staffHash = hashPassword('Staff1234!');
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO users (username, password_hash, full_name, role, partner_id, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, 'staff', 2, 1, ?, ?)
+    `).run('staff', staffHash, 'Trading Staff (Shariif)', now, now);
+    console.log('[AUTH SETUP] Initial staff user "staff" established.');
+  }
+}
+
+// ----------------- REAL SERVER-SIDE AUTHENTICATION -----------------
+
+export function loginUser(
+  usernameInput: string,
+  passwordInput: string,
+  clientInfo?: { ip?: string; userAgent?: string }
+): {
+  success: boolean;
+  session?: { token: string; user: SafeUser; expiresAt: string };
+  error?: string;
+  code?: string;
+} {
+  const cleanUsername = String(usernameInput || '').trim();
+  const cleanPassword = String(passwordInput || '');
+
+  if (!cleanUsername || !cleanPassword) {
+    return { success: false, error: 'Fadlan geli magaca isticmaalaha iyo furaha sirta ah (Username and password required)!' };
+  }
+
+  const row = db.prepare(`
+    SELECT id, username, password_hash, full_name, role, partner_id, is_active, created_at, updated_at, last_login_at
+    FROM users
+    WHERE LOWER(username) = LOWER(?)
+  `).get(cleanUsername) as any;
+
+  if (!row) {
+    addAuditLog({
+      username: cleanUsername,
+      action: 'LOGIN_FAILED',
+      details: 'Username not found',
+      ipAddress: clientInfo?.ip,
+    });
+    return { success: false, error: 'Magaca isticmaalaha ama furaha sirta ah ma saxna (Invalid username or password)!' };
+  }
+
+  if (Number(row.is_active) !== 1) {
+    addAuditLog({
+      userId: row.id,
+      username: row.username,
+      action: 'LOGIN_FAILED',
+      details: 'Account is deactivated',
+      ipAddress: clientInfo?.ip,
+    });
+    return { success: false, error: 'Akoonkan waa la hakiyay. La xiriir maamulaha sare (Account has been disabled)!' };
+  }
+
+  const match = verifyPassword(cleanPassword, row.password_hash);
+  if (!match) {
+    addAuditLog({
+      userId: row.id,
+      username: row.username,
+      action: 'LOGIN_FAILED',
+      details: 'Incorrect password',
+      ipAddress: clientInfo?.ip,
+    });
+    return { success: false, error: 'Magaca isticmaalaha ama furaha sirta ah ma saxna (Invalid username or password)!' };
+  }
+
+  // Generate cryptographically secure token
+  const token = `tok_${crypto.randomBytes(32).toString('hex')}`;
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + getSessionTtlMs()).toISOString();
+  const nowIso = now.toISOString();
+
+  // Clean old expired sessions for this user
+  db.prepare(`DELETE FROM sessions WHERE user_id = ? AND expires_at < ?`).run(row.id, nowIso);
+
+  // Insert session
+  db.prepare(`
+    INSERT INTO sessions (token, user_id, created_at, expires_at, ip_address, user_agent)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(token, row.id, nowIso, expiresAt, clientInfo?.ip || null, clientInfo?.userAgent || null);
+
+  // Update last login
+  db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(nowIso, row.id);
+
+  const safeUser: SafeUser = {
+    id: row.id,
+    username: row.username,
+    fullName: row.full_name,
+    role: row.role as 'admin' | 'staff',
+    partnerId: row.partner_id ? (row.partner_id as 1 | 2) : undefined,
+    isActive: Boolean(row.is_active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastLoginAt: nowIso,
+  };
+
+  addAuditLog({
+    userId: safeUser.id,
+    username: safeUser.username,
+    action: 'LOGIN_SUCCESS',
+    details: `Role: ${safeUser.role}, Full Name: ${safeUser.fullName}`,
+    ipAddress: clientInfo?.ip,
+  });
+
+  return {
+    success: true,
+    session: {
+      token,
+      user: safeUser,
+      expiresAt,
+    },
+  };
+}
+
+export function validateSession(tokenInput: string | undefined): {
+  valid: boolean;
+  user?: SafeUser;
+  session?: { token: string; expiresAt: string };
+  error?: string;
+} {
+  if (!tokenInput) return { valid: false, error: 'No token provided' };
+  const cleanToken = tokenInput.replace(/^Bearer\s+/i, '').trim();
+  if (!cleanToken) return { valid: false, error: 'Empty token' };
+
+  // Check new sessions table first
+  const sessionRow = db.prepare(`
+    SELECT s.token, s.user_id, s.expires_at,
+           u.id, u.username, u.full_name, u.role, u.partner_id, u.is_active, u.created_at, u.updated_at, u.last_login_at
+    FROM sessions s
+    JOIN users u ON s.user_id = u.id
+    WHERE s.token = ?
+  `).get(cleanToken) as any;
+
+  if (sessionRow) {
+    const isExpired = new Date(sessionRow.expires_at).getTime() < Date.now();
+    if (isExpired) {
+      db.prepare(`DELETE FROM sessions WHERE token = ?`).run(cleanToken);
+      return { valid: false, error: 'Session expired' };
+    }
+
+    if (Number(sessionRow.is_active) !== 1) {
+      return { valid: false, error: 'Account disabled' };
+    }
+
+    return {
+      valid: true,
+      user: {
+        id: sessionRow.id,
+        username: sessionRow.username,
+        fullName: sessionRow.full_name,
+        role: sessionRow.role as 'admin' | 'staff',
+        partnerId: sessionRow.partner_id ? (sessionRow.partner_id as 1 | 2) : undefined,
+        isActive: Boolean(sessionRow.is_active),
+        createdAt: sessionRow.created_at,
+        updatedAt: sessionRow.updated_at,
+        lastLoginAt: sessionRow.last_login_at || undefined,
+      },
+      session: {
+        token: sessionRow.token,
+        expiresAt: sessionRow.expires_at,
+      },
+    };
+  }
+
+  // Fallback for legacy auth_sessions table during transitions
+  const legacySession = db.prepare('SELECT * FROM auth_sessions WHERE token = ?').get(cleanToken) as any;
+  if (legacySession) {
+    if (new Date(legacySession.expires_at).getTime() < Date.now()) {
+      db.prepare('DELETE FROM auth_sessions WHERE token = ?').run(cleanToken);
+      return { valid: false, error: 'Session expired' };
+    }
+    const role: 'admin' | 'staff' = legacySession.role === 'Administrator' ? 'admin' : 'staff';
+    return {
+      valid: true,
+      user: {
+        id: legacySession.partner_id || 1,
+        username: legacySession.partner_name.toLowerCase().replace(/\s+/g, '_'),
+        fullName: legacySession.partner_name,
+        role,
+        partnerId: legacySession.partner_id as 1 | 2,
+        isActive: true,
+        createdAt: legacySession.created_at,
+        updatedAt: legacySession.created_at,
+      },
+      session: {
+        token: legacySession.token,
+        expiresAt: legacySession.expires_at,
+      },
+    };
+  }
+
+  return { valid: false, error: 'Invalid session' };
+}
+
+export function logoutUser(tokenInput: string, clientInfo?: { ip?: string }): void {
+  const cleanToken = tokenInput.replace(/^Bearer\s+/i, '').trim();
+  const sessionRow = db.prepare(`
+    SELECT s.user_id, u.username
+    FROM sessions s
+    JOIN users u ON s.user_id = u.id
+    WHERE s.token = ?
+  `).get(cleanToken) as any;
+
+  if (sessionRow) {
+    addAuditLog({
+      userId: sessionRow.user_id,
+      username: sessionRow.username,
+      action: 'LOGOUT',
+      details: 'User logged out',
+      ipAddress: clientInfo?.ip,
+    });
+  }
+
+  db.prepare(`DELETE FROM sessions WHERE token = ?`).run(cleanToken);
+  db.prepare(`DELETE FROM auth_sessions WHERE token = ?`).run(cleanToken);
+}
+
+export function changeUserPassword(
+  userId: number,
+  currentPassword: string,
+  newPassword: string,
+  clientInfo?: { ip?: string }
+): { success: boolean; error?: string } {
+  if (!newPassword || newPassword.length < 8) {
+    return { success: false, error: 'Furaha cusub waa inuu ka koobnaadaa ugu yaraan 8 xaraf (Minimum 8 characters)!' };
+  }
+
+  const user = db.prepare(`SELECT id, username, password_hash FROM users WHERE id = ?`).get(userId) as any;
+  if (!user) {
+    return { success: false, error: 'Isticmaalahan lama helin (User not found)!' };
+  }
+
+  if (!verifyPassword(currentPassword, user.password_hash)) {
+    return { success: false, error: 'Furahaaga hadda jira ma saxna (Current password is incorrect)!' };
+  }
+
+  const newHash = hashPassword(newPassword);
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`).run(newHash, now, userId);
+
+  addAuditLog({
+    userId,
+    username: user.username,
+    action: 'PASSWORD_CHANGED',
+    details: 'User changed their own password',
+    ipAddress: clientInfo?.ip,
+  });
+
+  return { success: true };
+}
+
+// ----------------- USER MANAGEMENT (ADMIN ONLY) -----------------
+
+export function getUsers(): SafeUser[] {
+  const rows = db.prepare(`
+    SELECT id, username, full_name, role, partner_id, is_active, created_at, updated_at, last_login_at
+    FROM users
+    ORDER BY created_at ASC
+  `).all() as any[];
+
+  return rows.map((r) => ({
+    id: r.id,
+    username: r.username,
+    fullName: r.full_name,
+    role: r.role as 'admin' | 'staff',
+    partnerId: r.partner_id ? (r.partner_id as 1 | 2) : undefined,
+    isActive: Boolean(r.is_active),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    lastLoginAt: r.last_login_at || undefined,
+  }));
+}
+
+export function createUser(
+  data: {
+    username: string;
+    password: string;
+    fullName: string;
+    role: 'admin' | 'staff';
+    partnerId?: number;
+  },
+  adminUser: SafeUser,
+  ip?: string
+): { success: boolean; user?: SafeUser; error?: string } {
+  const username = String(data.username || '').trim().toLowerCase();
+  const fullName = String(data.fullName || '').trim();
+  const password = String(data.password || '');
+  const role = data.role === 'admin' ? 'admin' : 'staff';
+  const partnerId = data.partnerId === 1 || data.partnerId === 2 ? data.partnerId : null;
+
+  if (!username || username.length < 3) {
+    return { success: false, error: 'Magaca isticmaalaha waa inuu ka koobnaadaa ugu yaraan 3 xaraf!' };
+  }
+  if (!fullName) {
+    return { success: false, error: 'Fadlan geli magaca buuxa ee isticmaalaha!' };
+  }
+  if (!password || password.length < 8) {
+    return { success: false, error: 'Furaha sirta ah waa inuu ka koobnaadaa ugu yaraan 8 xaraf (Minimum 8 characters)!' };
+  }
+
+  // Check username unique
+  const existing = db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(username);
+  if (existing) {
+    return { success: false, error: `Magaca "${username}" horey ayaa loo qaatay. Fadlan dooro mid kale!` };
+  }
+
+  const hash = hashPassword(password);
+  const now = new Date().toISOString();
+
+  const info = db.prepare(`
+    INSERT INTO users (username, password_hash, full_name, role, partner_id, is_active, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+  `).run(username, hash, fullName, role, partnerId, now, now);
+
+  const newId = Number(info.lastInsertRowid);
+  const createdUser: SafeUser = {
+    id: newId,
+    username,
+    fullName,
+    role,
+    partnerId: partnerId ? (partnerId as 1 | 2) : undefined,
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  addAuditLog({
+    userId: adminUser.id,
+    username: adminUser.username,
+    action: 'USER_CREATED',
+    entityType: 'user',
+    entityId: String(newId),
+    details: `Created user "${username}" with role "${role}"`,
+    ipAddress: ip,
+  });
+
+  return { success: true, user: createdUser };
+}
+
+export function updateUser(
+  id: number,
+  data: {
+    fullName?: string;
+    role?: 'admin' | 'staff';
+    isActive?: boolean | number;
+    partnerId?: number | null;
+  },
+  adminUser: SafeUser,
+  ip?: string
+): { success: boolean; user?: SafeUser; error?: string } {
+  const current = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+  if (!current) {
+    return { success: false, error: 'Isticmaalahan lama helin!' };
+  }
+
+  // CRITICAL SAFEGUARD: Do not allow demoting or deactivating the last active admin!
+  const isTargetActiveAdmin = current.role === 'admin' && Number(current.is_active) === 1;
+  const isDemotingOrDeactivating =
+    (data.role && data.role !== 'admin') ||
+    (data.isActive !== undefined && (data.isActive === false || data.isActive === 0));
+
+  if (isTargetActiveAdmin && isDemotingOrDeactivating) {
+    const activeAdminCount = (db.prepare(
+      "SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND is_active = 1"
+    ).get() as { c: number }).c;
+    if (activeAdminCount <= 1) {
+      return {
+        success: false,
+        error: 'Ma hakin kartid mana beddeli kartid doorka maamulaha kaliya ee firfircoon (Cannot deactivate or demote the last active admin)!',
+      };
+    }
+  }
+
+  const now = new Date().toISOString();
+  const newFullName = data.fullName !== undefined ? data.fullName.trim() : current.full_name;
+  const newRole = data.role !== undefined ? data.role : current.role;
+  const newIsActive = data.isActive !== undefined ? (data.isActive ? 1 : 0) : current.is_active;
+  const newPartnerId = data.partnerId !== undefined ? data.partnerId : current.partner_id;
+
+  db.prepare(`
+    UPDATE users SET
+      full_name = ?,
+      role = ?,
+      is_active = ?,
+      partner_id = ?,
+      updated_at = ?
+    WHERE id = ?
+  `).run(newFullName, newRole, newIsActive, newPartnerId, now, id);
+
+  // If user was deactivated, terminate all their active sessions immediately
+  if (newIsActive === 0) {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+  }
+
+  addAuditLog({
+    userId: adminUser.id,
+    username: adminUser.username,
+    action: 'USER_UPDATED',
+    entityType: 'user',
+    entityId: String(id),
+    details: `Updated user "${current.username}": role=${newRole}, active=${newIsActive}`,
+    ipAddress: ip,
+  });
+
+  const updated = db.prepare(`
+    SELECT id, username, full_name, role, partner_id, is_active, created_at, updated_at, last_login_at
+    FROM users WHERE id = ?
+  `).get(id) as any;
+
+  return {
+    success: true,
+    user: {
+      id: updated.id,
+      username: updated.username,
+      fullName: updated.full_name,
+      role: updated.role as 'admin' | 'staff',
+      partnerId: updated.partner_id ? (updated.partner_id as 1 | 2) : undefined,
+      isActive: Boolean(updated.is_active),
+      createdAt: updated.created_at,
+      updatedAt: updated.updated_at,
+      lastLoginAt: updated.last_login_at || undefined,
+    },
+  };
+}
+
+export function resetUserPassword(
+  id: number,
+  newPassword: string,
+  adminUser: SafeUser,
+  ip?: string
+): { success: boolean; error?: string } {
+  if (!newPassword || newPassword.length < 8) {
+    return { success: false, error: 'Furaha cusub waa inuu ka koobnaadaa ugu yaraan 8 xaraf (Minimum 8 characters)!' };
+  }
+
+  const current = db.prepare('SELECT id, username FROM users WHERE id = ?').get(id) as any;
+  if (!current) {
+    return { success: false, error: 'Isticmaalahan lama helin!' };
+  }
+
+  const hash = hashPassword(newPassword);
+  const now = new Date().toISOString();
+
+  db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(hash, now, id);
+
+  // Terminate any active sessions so user must log in with new password
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+
+  addAuditLog({
+    userId: adminUser.id,
+    username: adminUser.username,
+    action: 'PASSWORD_RESET',
+    entityType: 'user',
+    entityId: String(id),
+    details: `Admin reset password for user "${current.username}"`,
+    ipAddress: ip,
+  });
+
+  return { success: true };
+}
+
+export function deleteUser(
+  id: number,
+  adminUser: SafeUser,
+  ip?: string
+): { success: boolean; error?: string } {
+  const current = db.prepare('SELECT id, username, role, is_active FROM users WHERE id = ?').get(id) as any;
+  if (!current) {
+    return { success: false, error: 'Isticmaalahan lama helin!' };
+  }
+
+  if (current.id === adminUser.id) {
+    return { success: false, error: 'Ma tirtiri kartid akoonkaaga aad hadda ku jirto (Cannot delete your own account)!' };
+  }
+
+  if (current.role === 'admin' && Number(current.is_active) === 1) {
+    const activeAdminCount = (db.prepare(
+      "SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND is_active = 1"
+    ).get() as { c: number }).c;
+    if (activeAdminCount <= 1) {
+      return { success: false, error: 'Ma tirtiri kartid maamulaha kaliya ee firfircoon ee haray (Cannot delete last active admin)!' };
+    }
+  }
+
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+
+  addAuditLog({
+    userId: adminUser.id,
+    username: adminUser.username,
+    action: 'USER_DELETED',
+    entityType: 'user',
+    entityId: String(id),
+    details: `Deleted user "${current.username}"`,
+    ipAddress: ip,
+  });
+
+  return { success: true };
 }
 
 // ----------------- PARTNER & AUTH OPERATIONS -----------------
@@ -847,6 +1557,14 @@ export function createPhoneAtomic(data: {
 
     db.exec('COMMIT;');
 
+    addAuditLog({
+      username: paidName,
+      action: 'PHONE_ADDED',
+      entityType: 'phone',
+      entityId: phoneId,
+      details: `Qabasho: ${data.model} (IMEI: ${cleanImei}, Qiimo: $${data.purchasePrice}, Lacag-bixiye: ${paidName})`,
+    });
+
     const created = getPhoneById(phoneId)!;
     return { success: true, phone: created };
   } catch (err: any) {
@@ -1027,6 +1745,14 @@ export function sellPhoneAtomic(
 
     db.exec('COMMIT;');
 
+    addAuditLog({
+      username: funderName,
+      action: 'PHONE_SOLD',
+      entityType: 'phone',
+      entityId: phone.id,
+      details: `Iib: ${phone.model} (IMEI: ${phone.imei}, Qiimo: $${saleData.salePrice}, Faa'iido: +$${profit})`,
+    });
+
     const updated = getPhoneById(phoneId)!;
     return {
       success: true,
@@ -1049,6 +1775,15 @@ export function deletePhone(id: string): boolean {
     db.prepare('DELETE FROM transactions WHERE phone_id = ?').run(id);
     const result = db.prepare('DELETE FROM phones WHERE id = ?').run(id);
     db.exec('COMMIT;');
+    if (result.changes > 0) {
+      addAuditLog({
+        username: 'SYSTEM',
+        action: 'PHONE_DELETED',
+        entityType: 'phone',
+        entityId: id,
+        details: `Teleefan la tirtiray: ID ${id}`,
+      });
+    }
     return result.changes > 0;
   } catch (e) {
     db.exec('ROLLBACK;');
@@ -1095,6 +1830,14 @@ export function createExpenseAtomic(data: {
 
     db.exec('COMMIT;');
 
+    addAuditLog({
+      username: data.recordedBy || 'Wadaag',
+      action: 'EXPENSE_CREATED',
+      entityType: 'expense',
+      entityId: id,
+      details: `Kharash: ${data.category} - $${data.amount} (${data.description})`,
+    });
+
     return {
       id,
       category: data.category as any,
@@ -1115,6 +1858,15 @@ export function deleteExpense(id: string): boolean {
     db.prepare('DELETE FROM transactions WHERE reference = ?').run(id);
     const result = db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
     db.exec('COMMIT;');
+    if (result.changes > 0) {
+      addAuditLog({
+        username: 'SYSTEM',
+        action: 'EXPENSE_DELETED',
+        entityType: 'expense',
+        entityId: id,
+        details: `Kharash la tirtiray: ID ${id}`,
+      });
+    }
     return result.changes > 0;
   } catch (e) {
     db.exec('ROLLBACK;');
@@ -1169,6 +1921,14 @@ export function createWithdrawalAtomic(data: {
     );
 
     db.exec('COMMIT;');
+
+    addAuditLog({
+      username: partnerName,
+      action: 'WITHDRAWAL_CREATED',
+      entityType: 'withdrawal',
+      entityId: id,
+      details: `Kala-bixid: ${partnerName} wuxuu la baxay $${data.amount} (${data.reason})`,
+    });
 
     return {
       id,

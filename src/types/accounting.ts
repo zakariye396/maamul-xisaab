@@ -152,3 +152,29 @@ export interface AccountingSummary {
   netProfit: number; // Gross Profit - Expenses = Total Sales - Cost - Expenses
   totalWithdrawals: number; // Partner withdrawals
 }
+
+export type UserRole = 'admin' | 'staff';
+
+export interface SafeUser {
+  id: number;
+  username: string;
+  fullName: string;
+  role: UserRole;
+  partnerId?: PartnerId;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt?: string;
+}
+
+export interface AuditLogRecord {
+  id: number;
+  userId?: number;
+  username: string;
+  action: string;
+  entityType?: string;
+  entityId?: string;
+  details?: string;
+  ipAddress?: string;
+  createdAt: string;
+}

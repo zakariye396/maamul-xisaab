@@ -11,7 +11,7 @@ ExecStart=/usr/bin/npm start
 Restart=always
 RestartSec=5s
 Environment=NODE_ENV=production
-Environment=PORT=3000
+Environment=PORT=3001
 Environment=HOST=127.0.0.1
 Environment=DB_PATH=/data/accounting.db
 StandardOutput=append:/var/log/phone-trading-hub.log
