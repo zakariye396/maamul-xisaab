@@ -24,7 +24,7 @@ export function calculateSummary(
   expenses: ExpenseRecord[] = [],
   withdrawals: WithdrawalRecord[] = []
 ): AccountingSummary {
-  // Helper to determine capital owner (paidBy takes precedence over legacy purchasedBy)
+  // Helper to determine purchase capital owner (paidBy takes precedence over legacy purchasedBy)
   const getFunder = (p: PhoneRecord): number => p.paidBy || p.capitalOwner || p.purchasedBy;
   const getAcquirer = (p: PhoneRecord): number => p.acquiredBy || p.purchasedBy;
 
@@ -32,66 +32,135 @@ export function calculateSummary(
   const zakariyeFundedPhones = phones.filter((p) => getFunder(p) === 1);
   const zakariyeAcquiredPhones = phones.filter((p) => getAcquirer(p) === 1);
 
-  const zakariyeInStock = zakariyeFundedPhones.filter((p) => p.status === 'In Stock');
-  const zakariyeSold = zakariyeFundedPhones.filter((p) => p.status === 'Sold');
-
-  const zakariyeInStockCapital = zakariyeInStock.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
-  const zakariyeSoldCapital = zakariyeSold.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
-  const zakariyeTotalCapital = zakariyeInStockCapital + zakariyeSoldCapital;
-  const zakariyeWithdrawals = withdrawals
-    .filter((w) => w.partnerId === 1)
-    .reduce((sum, w) => sum + Number(w.amount || 0), 0);
-
   // Shariif (PartnerId = 2)
   const shariifFundedPhones = phones.filter((p) => getFunder(p) === 2);
   const shariifAcquiredPhones = phones.filter((p) => getAcquirer(p) === 2);
 
-  const shariifInStock = shariifFundedPhones.filter((p) => p.status === 'In Stock');
-  const shariifSold = shariifFundedPhones.filter((p) => p.status === 'Sold');
-
-  const shariifInStockCapital = shariifInStock.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
-  const shariifSoldCapital = shariifSold.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
-  const shariifTotalCapital = shariifInStockCapital + shariifSoldCapital;
-  const shariifWithdrawals = withdrawals
-    .filter((w) => w.partnerId === 2)
-    .reduce((sum, w) => sum + Number(w.amount || 0), 0);
-
-  // Overall Phone Metrics
+  // Status lists
   const inStockPhones = phones.filter((p) => p.status === 'In Stock');
   const soldPhones = phones.filter((p) => p.status === 'Sold');
   const returnedPhones = phones.filter((p) => p.status === 'Returned');
 
+  // Purchase Capital
+  const zakariyePurchaseCapital = zakariyeFundedPhones.reduce(
+    (sum, p) => sum + Number(p.purchasePrice || 0),
+    0
+  );
+  const shariifPurchaseCapital = shariifFundedPhones.reduce(
+    (sum, p) => sum + Number(p.purchasePrice || 0),
+    0
+  );
+
+  // Repair Capital (Attributed to the partner who actually paid for the repair)
+  let zakariyeRepairCapital = 0;
+  let shariifRepairCapital = 0;
+
+  let zakariyeInStockRepairs = 0;
+  let shariifInStockRepairs = 0;
+  let zakariyeSoldRepairs = 0;
+  let shariifSoldRepairs = 0;
+
+  for (const phone of phones) {
+    if (phone.repairs && Array.isArray(phone.repairs)) {
+      for (const rep of phone.repairs) {
+        const cost = Number(rep.repairCost || 0);
+        const payer = Number(rep.paidBy || rep.capitalOwner || 1);
+        if (payer === 1) {
+          zakariyeRepairCapital += cost;
+          if (phone.status === 'In Stock') zakariyeInStockRepairs += cost;
+          else if (phone.status === 'Sold') zakariyeSoldRepairs += cost;
+        } else if (payer === 2) {
+          shariifRepairCapital += cost;
+          if (phone.status === 'In Stock') shariifInStockRepairs += cost;
+          else if (phone.status === 'Sold') shariifSoldRepairs += cost;
+        }
+      }
+    } else if (phone.repairCost && Number(phone.repairCost) > 0) {
+      // Fallback if repairs array not loaded but repairCost is present on phone record
+      const cost = Number(phone.repairCost);
+      const payer = getFunder(phone);
+      if (payer === 1) {
+        zakariyeRepairCapital += cost;
+        if (phone.status === 'In Stock') zakariyeInStockRepairs += cost;
+        else if (phone.status === 'Sold') zakariyeSoldRepairs += cost;
+      } else {
+        shariifRepairCapital += cost;
+        if (phone.status === 'In Stock') shariifInStockRepairs += cost;
+        else if (phone.status === 'Sold') shariifSoldRepairs += cost;
+      }
+    }
+  }
+
+  // Zakariye Capital breakdown (Purchase + Repairs)
+  const zakariyeInStockPurchase = zakariyeFundedPhones
+    .filter((p) => p.status === 'In Stock')
+    .reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
+  const zakariyeSoldPurchase = zakariyeFundedPhones
+    .filter((p) => p.status === 'Sold')
+    .reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
+
+  const zakariyeInStockCapital = zakariyeInStockPurchase + zakariyeInStockRepairs;
+  const zakariyeSoldCapital = zakariyeSoldPurchase + zakariyeSoldRepairs;
+  const zakariyeTotalCapital = zakariyePurchaseCapital + zakariyeRepairCapital;
+
+  const zakariyeWithdrawals = withdrawals
+    .filter((w) => w.partnerId === 1)
+    .reduce((sum, w) => sum + Number(w.amount || 0), 0);
+
+  // Shariif Capital breakdown (Purchase + Repairs)
+  const shariifInStockPurchase = shariifFundedPhones
+    .filter((p) => p.status === 'In Stock')
+    .reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
+  const shariifSoldPurchase = shariifFundedPhones
+    .filter((p) => p.status === 'Sold')
+    .reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
+
+  const shariifInStockCapital = shariifInStockPurchase + shariifInStockRepairs;
+  const shariifSoldCapital = shariifSoldPurchase + shariifSoldRepairs;
+  const shariifTotalCapital = shariifPurchaseCapital + shariifRepairCapital;
+
+  const shariifWithdrawals = withdrawals
+    .filter((w) => w.partnerId === 2)
+    .reduce((sum, w) => sum + Number(w.amount || 0), 0);
+
+  // Overall Business Totals
+  const totalPurchaseCapital = zakariyePurchaseCapital + shariifPurchaseCapital;
+  const totalRepairCapital = zakariyeRepairCapital + shariifRepairCapital;
   const totalCapital = zakariyeTotalCapital + shariifTotalCapital;
   const totalInStockCapital = zakariyeInStockCapital + shariifInStockCapital;
   const totalSoldCapital = zakariyeSoldCapital + shariifSoldCapital;
 
-  // Sales & Profit (Business Level Shared Total, NOT 50/50, strictly whole business)
+  // Sales & Gross Profit (Total Sales - Total Sold Cost including repairs)
   const totalSales = soldPhones.reduce((sum, p) => sum + Number(p.salePrice || 0), 0);
-  const grossProfit = totalSales - totalSoldCapital; // Total Sales - Total Sold Phones Purchase Cost
+  const grossProfit = totalSales - totalSoldCapital;
 
-  // Expenses
+  // Operating Expenses & Net Profit
   const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-  const netProfit = grossProfit - totalExpenses; // Total Sales - Total Sold Cost - Expenses
+  const netProfit = grossProfit - totalExpenses;
 
   const totalWithdrawals = zakariyeWithdrawals + shariifWithdrawals;
 
   return {
+    zakariyePurchaseCapital,
+    zakariyeRepairCapital,
     zakariyeTotalCapital,
     zakariyeInStockCapital,
     zakariyeSoldCapital,
     zakariyePhonesCount: zakariyeFundedPhones.length,
     zakariyePhonesAcquired: zakariyeAcquiredPhones.length,
-    zakariyeInStockCount: zakariyeInStock.length,
-    zakariyeSoldCount: zakariyeSold.length,
+    zakariyeInStockCount: zakariyeFundedPhones.filter((p) => p.status === 'In Stock').length,
+    zakariyeSoldCount: zakariyeFundedPhones.filter((p) => p.status === 'Sold').length,
     zakariyeWithdrawals,
 
+    shariifPurchaseCapital,
+    shariifRepairCapital,
     shariifTotalCapital,
     shariifInStockCapital,
     shariifSoldCapital,
     shariifPhonesCount: shariifFundedPhones.length,
     shariifPhonesAcquired: shariifAcquiredPhones.length,
-    shariifInStockCount: shariifInStock.length,
-    shariifSoldCount: shariifSold.length,
+    shariifInStockCount: shariifFundedPhones.filter((p) => p.status === 'In Stock').length,
+    shariifSoldCount: shariifFundedPhones.filter((p) => p.status === 'Sold').length,
     shariifWithdrawals,
 
     totalPhones: phones.length,
@@ -99,6 +168,8 @@ export function calculateSummary(
     phonesSold: soldPhones.length,
     phonesReturned: returnedPhones.length,
 
+    totalPurchaseCapital,
+    totalRepairCapital,
     totalCapital,
     totalInStockCapital,
     totalSoldCapital,
@@ -119,19 +190,8 @@ export function loadStoredPhones(): PhoneRecord[] {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     }
-  } catch (e) {
-    console.error('Error loading phones from storage', e);
-  }
+  } catch (e) {}
   return INITIAL_PHONES;
-}
-
-export function saveStoredPhones(phones: PhoneRecord[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(STORAGE_KEY_PHONES, JSON.stringify(phones));
-  } catch (e) {
-    console.error('Error saving phones to storage', e);
-  }
 }
 
 export function loadStoredExpenses(): ExpenseRecord[] {
@@ -142,19 +202,8 @@ export function loadStoredExpenses(): ExpenseRecord[] {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) return parsed;
     }
-  } catch (e) {
-    console.error('Error loading expenses', e);
-  }
+  } catch (e) {}
   return INITIAL_EXPENSES;
-}
-
-export function saveStoredExpenses(expenses: ExpenseRecord[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(STORAGE_KEY_EXPENSES, JSON.stringify(expenses));
-  } catch (e) {
-    console.error('Error saving expenses', e);
-  }
 }
 
 export function loadStoredWithdrawals(): WithdrawalRecord[] {
@@ -165,19 +214,8 @@ export function loadStoredWithdrawals(): WithdrawalRecord[] {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) return parsed;
     }
-  } catch (e) {
-    console.error('Error loading withdrawals', e);
-  }
+  } catch (e) {}
   return INITIAL_WITHDRAWALS;
-}
-
-export function saveStoredWithdrawals(withdrawals: WithdrawalRecord[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(STORAGE_KEY_WITHDRAWALS, JSON.stringify(withdrawals));
-  } catch (e) {
-    console.error('Error saving withdrawals', e);
-  }
 }
 
 export function loadStoredTransactions(): TransactionRecord[] {
@@ -188,30 +226,6 @@ export function loadStoredTransactions(): TransactionRecord[] {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) return parsed;
     }
-  } catch (e) {
-    console.error('Error loading transactions', e);
-  }
+  } catch (e) {}
   return INITIAL_TRANSACTIONS;
-}
-
-export function saveStoredTransactions(transactions: TransactionRecord[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(STORAGE_KEY_TRANSACTIONS, JSON.stringify(transactions));
-  } catch (e) {
-    console.error('Error saving transactions', e);
-  }
-}
-
-export function resetAllDataToDefault() {
-  saveStoredPhones(INITIAL_PHONES);
-  saveStoredExpenses(INITIAL_EXPENSES);
-  saveStoredWithdrawals(INITIAL_WITHDRAWALS);
-  saveStoredTransactions(INITIAL_TRANSACTIONS);
-  return {
-    phones: [...INITIAL_PHONES],
-    expenses: [...INITIAL_EXPENSES],
-    withdrawals: [...INITIAL_WITHDRAWALS],
-    transactions: [...INITIAL_TRANSACTIONS],
-  };
 }

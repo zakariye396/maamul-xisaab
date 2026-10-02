@@ -13,6 +13,19 @@ export type PhoneCondition = 'Brand New' | 'Grade A (Nadiif)' | 'Grade B (Dhex-d
 export type PhoneStatus = 'In Stock' | 'Sold' | 'Returned';
 export type PaymentMethod = 'EVC Plus' | 'Zaad' | 'Sahal' | 'eDahab' | 'Cash' | 'Bank Transfer' | 'Other';
 
+export interface PhoneRepairRecord {
+  id: string;
+  phoneId: string;
+  description: string;
+  repairCost: number;
+  repairDate: string;
+  paidBy: PartnerId;
+  capitalOwner: PartnerId;
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface PhoneRecord {
   id: string;
   imei: string;
@@ -37,6 +50,12 @@ export interface PhoneRecord {
 
   purchaseDate: string; // YYYY-MM-DD
   status: PhoneStatus;
+
+  // Repair / Maintenance Costs
+  repairCost?: number; // Total sum of all repairs for this phone
+  totalCost?: number; // purchasePrice + (repairCost || 0)
+  repairs?: PhoneRepairRecord[];
+
   salePrice?: number;
   saleDate?: string;
   customerName?: string;
@@ -57,8 +76,10 @@ export interface SaleRecord {
   capitalOwner: PartnerId;
   purchasedBy: PartnerId;
   purchasePrice: number;
+  repairCost?: number;
+  totalCost?: number;
   salePrice: number;
-  profit: number; // Sale Price - Purchase Price
+  profit: number; // Sale Price - (purchasePrice + repairCost)
   saleDate: string;
   customerName?: string;
   customerPhone?: string;
@@ -87,6 +108,8 @@ export interface ExpenseRecord {
 export type TransactionType =
   | 'Phone Purchase'
   | 'Phone Sale'
+  | 'Phone Repair'
+  | 'REPAIR'
   | 'Partner Capital'
   | 'Capital Withdrawal'
   | 'Expense'
@@ -117,7 +140,9 @@ export interface WithdrawalRecord {
 
 export interface AccountingSummary {
   // Zakariye metrics
-  zakariyeTotalCapital: number; // Capital funded / owned by Zakariye (based on paidBy/capitalOwner)
+  zakariyePurchaseCapital: number; // Purchase capital funded by Zakariye
+  zakariyeRepairCapital: number; // Repair capital funded by Zakariye
+  zakariyeTotalCapital: number; // Total Capital funded / owned by Zakariye (Purchase + Repairs)
   zakariyeInStockCapital: number;
   zakariyeSoldCapital: number;
   zakariyePhonesCount: number; // Total phones funded by Zakariye
@@ -127,7 +152,9 @@ export interface AccountingSummary {
   zakariyeWithdrawals: number;
 
   // Shariif metrics
-  shariifTotalCapital: number; // Capital funded / owned by Shariif (based on paidBy/capitalOwner)
+  shariifPurchaseCapital: number; // Purchase capital funded by Shariif
+  shariifRepairCapital: number; // Repair capital funded by Shariif
+  shariifTotalCapital: number; // Total Capital funded / owned by Shariif (Purchase + Repairs)
   shariifInStockCapital: number;
   shariifSoldCapital: number;
   shariifPhonesCount: number; // Total phones funded by Shariif
@@ -142,13 +169,15 @@ export interface AccountingSummary {
   phonesSold: number;
   phonesReturned: number;
 
-  totalCapital: number; // Zakariye Capital + Shariif Capital
-  totalInStockCapital: number; // Current active inventory cost (Inventory Value)
-  totalSoldCapital: number; // Cost of sold phones (Total Purchase Cost)
+  totalPurchaseCapital: number; // Sum of all phone purchase costs
+  totalRepairCapital: number; // Sum of all phone repair costs
+  totalCapital: number; // Total Capital = Purchase Capital + Repair Capital
+  totalInStockCapital: number; // Current active inventory cost (Purchase + In-Stock Repairs)
+  totalSoldCapital: number; // Cost of sold phones (Purchase + Sold Repairs)
 
   totalSales: number; // Total Revenue from phone sales
-  grossProfit: number; // Total Sales - Total Sold Phones Purchase Cost
-  totalExpenses: number; // Business Expenses
+  grossProfit: number; // Total Sales - Total Sold Cost (Purchase + Repairs)
+  totalExpenses: number; // Business Expenses (Operating)
   netProfit: number; // Gross Profit - Expenses = Total Sales - Cost - Expenses
   totalWithdrawals: number; // Partner withdrawals
 }

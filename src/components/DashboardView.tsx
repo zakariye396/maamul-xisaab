@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Wallet,
   TrendingUp,
@@ -13,6 +13,7 @@ import {
   Users,
   Eye,
   ShieldCheck,
+  Wrench,
 } from 'lucide-react';
 import { AccountingSummary, Partner, PhoneRecord, TransactionRecord } from '../types/accounting';
 import { NavigationTab } from './Sidebar';
@@ -27,6 +28,18 @@ interface DashboardViewProps {
   onOpenSellModal: (phone: PhoneRecord) => void;
   setActiveTab: (tab: NavigationTab) => void;
   onLoadTestCase: () => void;
+  onAddRepair?: (
+    phoneId: string,
+    repair: {
+      description: string;
+      repairCost: number;
+      repairDate: string;
+      paidBy: 1 | 2;
+      capitalOwner?: 1 | 2;
+      notes?: string;
+    }
+  ) => Promise<void> | void;
+  onDeleteRepair?: (repairId: string) => Promise<void> | void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -38,6 +51,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenSellModal,
   setActiveTab,
   onLoadTestCase,
+  onAddRepair,
+  onDeleteRepair,
 }) => {
   const [selectedPhone, setSelectedPhone] = useState<PhoneRecord | null>(null);
 
@@ -51,9 +66,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const zakariyeInStockCnt = summary.zakariyeInStockCount;
   const zakariyeSoldCnt = summary.zakariyeSoldCount;
 
+  // Sync selected phone with phones state
+  const activeSelectedPhone = useMemo(() => {
+    if (!selectedPhone) return null;
+    return phones.find((p) => p.id === selectedPhone.id) || selectedPhone;
+  }, [phones, selectedPhone]);
+
   return (
     <div className="space-y-6">
-      {/* 1. CLEAN EXECUTIVE ACTION HEADER (No rules, no explanations) */}
+      {/* 1. CLEAN EXECUTIVE ACTION HEADER */}
       <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
@@ -65,7 +86,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </span>
           </div>
           <p className="text-xs text-slate-500 font-medium mt-0.5">
-            Xisaabaadka rasmiga ah: Maamulka lafaha gaarka ah iyo faa'iidada guud ee dukaanka.
+            Xisaabaadka rasmiga ah: Maamulka lafaha gaarka ah, dayactirka, iyo faa'iidada guud ee dukaanka.
           </p>
         </div>
 
@@ -88,7 +109,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* 2. TOP KPI ROW - 4 CARDS (Section 3: Total Capital, Total Sales, Gross Profit, Net Profit) */}
+      {/* 2. TOP KPI ROW - 4 CARDS: Total Capital, Total Sales, Gross Profit, Net Profit */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* 1. Total Capital */}
         <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between">
@@ -108,6 +129,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span className="text-blue-600 font-bold">Zakariye: ${zakariyeTotal}</span>
               <span className="text-slate-300">·</span>
               <span className="text-emerald-600 font-bold">Shariif: ${summary.shariifTotalCapital}</span>
+            </div>
+            <div className="text-[10px] text-slate-400 mt-1">
+              Purchase: ${summary.totalPurchaseCapital} · Repairs: ${summary.totalRepairCapital}
             </div>
           </div>
         </div>
@@ -173,7 +197,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* 3. SECOND ROW - 3 CARDS (Section 3: Phones In Stock, Phones Sold, Business Expenses) */}
+      {/* 3. SECOND ROW - 3 CARDS: Phones In Stock, Phones Sold, Business Expenses */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {/* 5. Phones In Stock */}
         <div className="bg-white rounded-2xl p-4.5 border border-slate-200 shadow-xs flex items-center justify-between">
@@ -230,20 +254,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* 4. PARTNER SUMMARY - CLEAN CARDS (Section 8) */}
+      {/* 4. PARTNER SUMMARY - CLEAN CARDS */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-black uppercase tracking-wider text-slate-900 flex items-center gap-2">
             <Users className="w-4 h-4 text-blue-600" />
-            <span>Partner Summary (Lafaha Shuraakada)</span>
+            <span>Partner Summary (Lafaha Shuraakada: Gadasho + Dayactir)</span>
           </h2>
           <span className="text-xs text-slate-500 font-medium">
-            Total Capital: <strong>${summary.totalCapital}</strong> ($50 + $80)
+            Total Capital: <strong>${summary.totalCapital}</strong> (Purchase: ${summary.totalPurchaseCapital} + Repairs: ${summary.totalRepairCapital})
           </span>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* ZAKARIYE CARD (Section 8 exact specifications) */}
+          {/* ZAKARIYE CARD */}
           <div className="bg-white rounded-2xl border-2 border-blue-200 p-5 shadow-xs flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between mb-4">
@@ -267,35 +291,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </button>
               </div>
 
-              {/* Exact 5 metrics: Capital Owned, Phones Acquired, In Stock, Sold, Inventory Cost */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-3.5 rounded-xl bg-blue-50/50 border border-blue-100 text-xs">
+              {/* Exact Metrics: Capital Owned, Purchase Cap, Repair Cap, Phones Acquired, In Stock, Sold */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3.5 rounded-xl bg-blue-50/50 border border-blue-100 text-xs">
                 <div>
-                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Capital Owned</span>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Total Capital</span>
                   <span className="font-black text-blue-900 text-base">
                     ${zakariyeTotal}
                   </span>
                 </div>
                 <div>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Purchase Capital</span>
+                  <span className="font-bold text-slate-800 text-sm">
+                    ${summary.zakariyePurchaseCapital}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Repair Capital</span>
+                  <span className="font-bold text-amber-700 text-sm">
+                    ${summary.zakariyeRepairCapital}
+                  </span>
+                </div>
+                <div>
                   <span className="text-slate-500 block text-[10px] uppercase font-bold">Phones Acquired</span>
-                  <span className="font-black text-slate-800 text-base">
+                  <span className="font-bold text-slate-800 text-sm">
                     {summary.zakariyePhonesAcquired}
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block text-[10px] uppercase font-bold">In Stock</span>
-                  <span className="font-black text-slate-800 text-base">
-                    {zakariyeInStockCnt}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Sold</span>
-                  <span className="font-black text-slate-800 text-base">
-                    {zakariyeSoldCnt}
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">In Stock / Sold</span>
+                  <span className="font-bold text-slate-800 text-sm">
+                    {zakariyeInStockCnt} / {zakariyeSoldCnt}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-500 block text-[10px] uppercase font-bold">Inventory Cost</span>
-                  <span className="font-black text-slate-800 text-base">
+                  <span className="font-bold text-slate-800 text-sm">
                     ${zakariyeInStock}
                   </span>
                 </div>
@@ -303,7 +333,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          {/* SHARIIF CARD (Section 8 exact specifications) */}
+          {/* SHARIIF CARD */}
           <div className="bg-white rounded-2xl border-2 border-emerald-200 p-5 shadow-xs flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between mb-4">
@@ -327,35 +357,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </button>
               </div>
 
-              {/* Exact 5 metrics: Capital Owned, Phones Acquired, In Stock, Sold, Inventory Cost */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-3.5 rounded-xl bg-emerald-50/50 border border-emerald-100 text-xs">
+              {/* Exact Metrics: Capital Owned, Purchase Cap, Repair Cap, Phones Acquired, In Stock, Sold */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3.5 rounded-xl bg-emerald-50/50 border border-emerald-100 text-xs">
                 <div>
-                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Capital Owned</span>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Total Capital</span>
                   <span className="font-black text-emerald-900 text-base">
                     ${summary.shariifTotalCapital}
                   </span>
                 </div>
                 <div>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Purchase Capital</span>
+                  <span className="font-bold text-slate-800 text-sm">
+                    ${summary.shariifPurchaseCapital}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Repair Capital</span>
+                  <span className="font-bold text-amber-700 text-sm">
+                    ${summary.shariifRepairCapital}
+                  </span>
+                </div>
+                <div>
                   <span className="text-slate-500 block text-[10px] uppercase font-bold">Phones Acquired</span>
-                  <span className="font-black text-slate-800 text-base">
+                  <span className="font-bold text-slate-800 text-sm">
                     {summary.shariifPhonesAcquired}
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block text-[10px] uppercase font-bold">In Stock</span>
-                  <span className="font-black text-slate-800 text-base">
-                    {summary.shariifInStockCount}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Sold</span>
-                  <span className="font-black text-slate-800 text-base">
-                    {summary.shariifSoldCount}
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">In Stock / Sold</span>
+                  <span className="font-bold text-slate-800 text-sm">
+                    {summary.shariifInStockCount} / {summary.shariifSoldCount}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-500 block text-[10px] uppercase font-bold">Inventory Cost</span>
-                  <span className="font-black text-slate-800 text-base">
+                  <span className="font-bold text-slate-800 text-sm">
                     ${summary.shariifInStockCapital}
                   </span>
                 </div>
@@ -365,7 +401,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* 5. INVENTORY & RECENT SALES (Section 3: Compact operational lists) */}
+      {/* 5. INVENTORY & RECENT SALES */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Quick In-Stock Phones */}
         <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between">
@@ -402,81 +438,96 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </p>
                 </div>
               ) : (
-                inStockPhones.map((phone) => (
-                  <div
-                    key={phone.id}
-                    className="p-3 rounded-xl border border-slate-200 hover:border-blue-300 bg-slate-50/40 hover:bg-white transition flex items-center justify-between gap-3 text-xs"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div
-                        className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs shrink-0 ${
-                          phone.purchasedBy === 1
-                            ? 'bg-blue-100 text-blue-700'
-                            : 'bg-emerald-100 text-emerald-700'
-                        }`}
-                      >
-                        {phone.purchasedBy === 1 ? 'Z' : 'S'}
-                      </div>
-                      <div className="min-w-0">
-                        <button
-                          onClick={() => setSelectedPhone(phone)}
-                          className="font-bold text-slate-900 hover:text-blue-600 text-left truncate block"
+                inStockPhones.map((phone) => {
+                  const repairCostNum = Number(phone.repairCost || 0);
+                  const totalCostNum = phone.totalCost ?? (phone.purchasePrice + repairCostNum);
+                  return (
+                    <div
+                      key={phone.id}
+                      className="p-3 rounded-xl border border-slate-200 hover:border-blue-300 bg-slate-50/40 hover:bg-white transition flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs shrink-0 ${
+                            phone.purchasedBy === 1
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-emerald-100 text-emerald-700'
+                          }`}
                         >
-                          {phone.brand} {phone.model}
-                        </button>
-                        <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
-                          <span className="font-mono">{phone.imei.slice(-8)}</span>
-                          <span>·</span>
-                          <span>Lafaha: <strong>${phone.purchasePrice}</strong></span>
-                          <span>·</span>
-                          <span className="font-semibold text-slate-700">
-                            {phone.purchasedBy === 1 ? 'Zakariye' : 'Shariif'}
-                          </span>
+                          {phone.purchasedBy === 1 ? 'Z' : 'S'}
+                        </div>
+                        <div className="min-w-0">
+                          <button
+                            onClick={() => setSelectedPhone(phone)}
+                            className="font-bold text-slate-900 hover:text-blue-600 text-left truncate block"
+                          >
+                            {phone.brand} {phone.model}
+                          </button>
+                          <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            <span className="font-mono">{phone.imei.slice(-8)}</span>
+                            <span>·</span>
+                            <span>Gadasho: <strong>${phone.purchasePrice}</strong></span>
+                            {repairCostNum > 0 && (
+                              <>
+                                <span>·</span>
+                                <span className="text-amber-700 font-bold flex items-center gap-0.5">
+                                  <Wrench className="w-3 h-3" />
+                                  <span>Dayactir: ${repairCostNum}</span>
+                                </span>
+                              </>
+                            )}
+                            <span>·</span>
+                            <span className="font-bold text-slate-900">Total: ${totalCostNum}</span>
+                            <span>·</span>
+                            <span className="font-semibold text-slate-700">
+                              {phone.purchasedBy === 1 ? 'Zakariye' : 'Shariif'}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={() => setSelectedPhone(phone)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition cursor-pointer"
-                        title="View details"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => onOpenSellModal(phone)}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition flex items-center gap-1 cursor-pointer active:scale-95"
-                      >
-                        <DollarSign className="w-3 h-3" />
-                        <span>Iibi</span>
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => setSelectedPhone(phone)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition cursor-pointer"
+                          title="View details"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => onOpenSellModal(phone)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition flex items-center gap-1 cursor-pointer active:scale-95"
+                        >
+                          <DollarSign className="w-3.5 h-3.5" />
+                          <span>Iibi</span>
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
         </div>
 
-        {/* Recently Sold Phones */}
+        {/* Quick Recent Sales */}
         <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h3 className="font-extrabold text-sm sm:text-base text-slate-900 flex items-center gap-2">
-                  <span>Iibkii ugu Dambeeyay (Recent Sales)</span>
+                  <span>Iibkii Ugu Dambeeyay (Sold)</span>
                   <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold">
                     {summary.phonesSold} iibsamay
                   </span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Diiwaanka teleefannada la iibiyay iyo faa'iidada guud
+                  Teleefannada la iibiyay iyo faa'iidada soo hoyatay
                 </p>
               </div>
               <button
                 onClick={() => setActiveTab('sales')}
-                className="text-xs font-bold text-blue-600 hover:text-blue-700 cursor-pointer"
+                className="text-xs font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
               >
                 Dhammaan &rarr;
               </button>
@@ -492,40 +543,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               ) : (
                 soldPhones.map((phone) => {
-                  const profit = (phone.salePrice || 0) - phone.purchasePrice;
+                  const repairCostNum = Number(phone.repairCost || 0);
+                  const totalCostNum = phone.totalCost ?? (phone.purchasePrice + repairCostNum);
+                  const profit = (phone.salePrice || 0) - totalCostNum;
                   return (
                     <div
                       key={phone.id}
-                      className="p-3 rounded-xl border border-slate-200 bg-slate-50/40 hover:bg-white transition flex items-center justify-between gap-3 text-xs"
+                      className="p-3 rounded-xl border border-slate-200 hover:border-emerald-300 bg-slate-50/40 hover:bg-white transition flex items-center justify-between gap-3 text-xs"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center font-black shrink-0">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center font-black text-xs shrink-0">
                           <CheckCircle2 className="w-4 h-4" />
                         </div>
                         <div className="min-w-0">
                           <button
                             onClick={() => setSelectedPhone(phone)}
-                            className="font-bold text-slate-900 hover:text-blue-600 text-left truncate block"
+                            className="font-bold text-slate-900 hover:text-emerald-600 text-left truncate block"
                           >
                             {phone.brand} {phone.model}
                           </button>
-                          <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
-                            <span>
-                              Cost ({phone.purchasedBy === 1 ? 'Zakariye' : 'Shariif'}): <strong>${phone.purchasePrice}</strong>
-                            </span>
+                          <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            <span>Iib: <strong>${phone.salePrice}</strong></span>
                             <span>·</span>
-                            <span>Sale: <strong className="text-slate-900">${phone.salePrice}</strong></span>
+                            <span>Total Cost: ${totalCostNum}</span>
+                            <span>·</span>
+                            <span className="font-bold text-emerald-600">Profit: +${profit}</span>
                           </div>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-black text-emerald-600 text-xs sm:text-sm">
-                          +${profit}
-                        </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           onClick={() => setSelectedPhone(phone)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition cursor-pointer"
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition cursor-pointer"
                           title="View details"
                         >
                           <Eye className="w-3.5 h-3.5" />
@@ -542,12 +592,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* PHONE DETAILS MODAL */}
       <PhoneDetailsModal
-        phone={selectedPhone}
+        phone={activeSelectedPhone}
         isOpen={Boolean(selectedPhone)}
         onClose={() => setSelectedPhone(null)}
         partners={partners}
         transactions={transactions}
         onOpenSellModal={onOpenSellModal}
+        onAddRepair={onAddRepair}
+        onDeleteRepair={onDeleteRepair}
       />
     </div>
   );

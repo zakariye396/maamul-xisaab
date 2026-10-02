@@ -10,6 +10,7 @@ import {
   Wallet,
   Receipt,
   Scale,
+  Wrench,
 } from 'lucide-react';
 import { AccountingSummary, ExpenseRecord, Partner, PhoneRecord } from '../types/accounting';
 
@@ -30,11 +31,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
 
+  // Helper for phone total cost
+  const getPhoneTotalCost = (p: PhoneRecord) => p.totalCost ?? (Number(p.purchasePrice || 0) + Number(p.repairCost || 0));
+
   // Daily Report calculations
   const dailyPurchased = phones.filter((p) => p.purchaseDate === selectedDate);
   const dailySold = phones.filter((p) => p.saleDate === selectedDate);
   const dailySales = dailySold.reduce((sum, p) => sum + Number(p.salePrice || 0), 0);
-  const dailyCost = dailySold.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
+  const dailyCost = dailySold.reduce((sum, p) => sum + getPhoneTotalCost(p), 0);
   const dailyGrossProfit = dailySales - dailyCost;
   const dailyExpenses = expenses
     .filter((e) => e.date === selectedDate)
@@ -46,7 +50,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const monthlySold = phones.filter((p) => p.saleDate && p.saleDate.startsWith(selectedMonth));
   const monthlyPurchasesTotal = monthlyPurchased.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
   const monthlySales = monthlySold.reduce((sum, p) => sum + Number(p.salePrice || 0), 0);
-  const monthlySoldCost = monthlySold.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
+  const monthlySoldCost = monthlySold.reduce((sum, p) => sum + getPhoneTotalCost(p), 0);
   const monthlyGrossProfit = monthlySales - monthlySoldCost;
   const monthlyExpenses = expenses
     .filter((e) => e.date.startsWith(selectedMonth))
@@ -143,7 +147,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         </button>
       </div>
 
-      {/* 1. PROFIT & LOSS STATEMENT (Section 12 in prompt) */}
+      {/* 1. PROFIT & LOSS STATEMENT */}
       {reportTab === 'profit' && (
         <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-6">
           <div className="border-b border-slate-100 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -152,7 +156,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 Bayaanka Faa'iidada & Qasaaraha (Profit & Loss Statement)
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Warbixinta rasmiga ah ee dakhliga, kharashka lafaha iibsamay (COGS), iyo faa'iidada saafiga ah.
+                Warbixinta rasmiga ah ee dakhliga, kharashka lafaha iibsamay (COGS oo ay ku jiraan dayactirku), iyo faa'iidada saafiga ah.
               </p>
             </div>
             <span className="text-xs px-3 py-1 rounded-full font-bold bg-slate-100 text-slate-700">
@@ -160,125 +164,41 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </span>
           </div>
 
-          {/* Section 12 KPI Row: Revenue, Cost of Goods Sold, Gross Profit, Operating Expenses, Net Profit */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-              <span className="text-[11px] font-bold uppercase text-slate-500 block mb-1">
-                Revenue
-              </span>
-              <span className="text-2xl font-black text-slate-900">
-                ${summary.totalSales.toLocaleString()}
-              </span>
-              <span className="text-[10px] text-slate-400 block mt-0.5">
-                Wadarta Iibka
-              </span>
+          <div className="space-y-4 text-xs">
+            <div className="flex justify-between py-2 border-b border-slate-100">
+              <span className="font-bold text-slate-700">1. Total Revenue (Wadarta Iibka):</span>
+              <span className="font-black text-slate-900 text-sm">${summary.totalSales.toLocaleString()}</span>
             </div>
 
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-              <span className="text-[11px] font-bold uppercase text-slate-500 block mb-1">
-                Cost of Goods Sold
-              </span>
-              <span className="text-2xl font-black text-slate-700">
-                ${summary.totalSoldCapital.toLocaleString()}
-              </span>
-              <span className="text-[10px] text-slate-400 block mt-0.5">
-                COGS (Lafaha Iibsamay)
-              </span>
+            <div className="flex justify-between py-2 border-b border-slate-100 text-slate-600">
+              <span>2. Cost of Goods Sold (Lafaha Teleefannada Iibsamay [Gadasho + Dayactir]):</span>
+              <span className="font-bold text-slate-800">-${summary.totalSoldCapital.toLocaleString()}</span>
             </div>
 
-            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200">
-              <span className="text-[11px] font-bold uppercase text-emerald-800 block mb-1">
-                Gross Profit
-              </span>
-              <span className="text-2xl font-black text-emerald-600">
-                ${summary.grossProfit.toLocaleString()}
-              </span>
-              <span className="text-[10px] text-emerald-700 block mt-0.5">
-                Revenue - COGS
-              </span>
+            <div className="flex justify-between py-2.5 border-b border-slate-200 bg-emerald-50/50 px-3 rounded-xl font-bold text-emerald-900">
+              <span className="text-sm">3. Gross Profit (Faa'iidada Dhexe ee Teleefannada):</span>
+              <span className="text-base font-black text-emerald-600">+${summary.grossProfit.toLocaleString()}</span>
             </div>
 
-            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200">
-              <span className="text-[11px] font-bold uppercase text-rose-700 block mb-1">
-                Operating Expenses
-              </span>
-              <span className="text-2xl font-black text-rose-600">
-                ${summary.totalExpenses.toLocaleString()}
-              </span>
-              <span className="text-[10px] text-rose-500 block mt-0.5">
-                Kharashaadka Hawlgalka
-              </span>
+            <div className="flex justify-between py-2 border-b border-slate-100 text-rose-700">
+              <span className="font-semibold">4. Operating Expenses (Kharashyada Shaqada Dukaanka):</span>
+              <span className="font-bold">-${summary.totalExpenses.toLocaleString()}</span>
             </div>
 
-            <div className="p-4 rounded-xl bg-slate-900 text-white border border-slate-800 col-span-2 sm:col-span-1">
-              <span className="text-[11px] font-bold uppercase text-emerald-400 block mb-1">
-                Net Profit
-              </span>
-              <span className="text-2xl font-black text-emerald-400">
+            <div className="flex justify-between py-3 border-t-2 border-slate-900 bg-slate-900 text-white px-4 rounded-xl items-center">
+              <div>
+                <span className="font-black text-sm block">5. Net Profit (Faa'iidada Saafiga ah):</span>
+                <span className="text-[10px] text-slate-400">Gross Profit - Operating Expenses</span>
+              </div>
+              <span className="text-xl font-black text-emerald-400">
                 ${summary.netProfit.toLocaleString()}
               </span>
-              <span className="text-[10px] text-slate-400 block mt-0.5">
-                Faa'iidada Saafiga ah
-              </span>
-            </div>
-          </div>
-
-          {/* Formal Accounting Income Statement Table */}
-          <div className="border border-slate-200 rounded-xl overflow-hidden">
-            <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 text-xs font-bold text-slate-700 uppercase tracking-wider flex justify-between">
-              <span>Account Description (Qaybta Xisaabta)</span>
-              <span>Amount (USD)</span>
-            </div>
-
-            <div className="divide-y divide-slate-100 text-xs">
-              <div className="px-4 py-3 flex justify-between items-center hover:bg-slate-50/50">
-                <div>
-                  <span className="font-bold text-slate-900 text-sm">Operating Revenue (Wadarta Iibka Guud)</span>
-                  <p className="text-[11px] text-slate-500">Iibka dhammaan teleefannada ganacsiga ({summary.phonesSold} xabo)</p>
-                </div>
-                <span className="font-black text-slate-900 text-sm">${summary.totalSales.toLocaleString()}</span>
-              </div>
-
-              <div className="px-4 py-3 flex justify-between items-center hover:bg-slate-50/50 bg-slate-50/20">
-                <div className="pl-4">
-                  <span className="font-medium text-slate-700">Cost of Goods Sold / COGS (Lafihii Teleefannada Iibsamay)</span>
-                  <p className="text-[11px] text-slate-400">Lafaha Zakariye (${summary.zakariyeSoldCapital}) + Lafaha Shariif (${summary.shariifSoldCapital})</p>
-                </div>
-                <span className="font-bold text-slate-700">(${summary.totalSoldCapital.toLocaleString()})</span>
-              </div>
-
-              <div className="px-4 py-3 flex justify-between items-center bg-emerald-50/50 font-bold border-t border-b border-emerald-200">
-                <div>
-                  <span className="text-emerald-900 font-extrabold text-sm">GROSS PROFIT (Faa'iidada Guud ee Iibka)</span>
-                  <p className="text-[11px] text-emerald-700">Wadaagga Guud ee Ganacsiga — laguma jaro wax lafo ah</p>
-                </div>
-                <span className="font-black text-emerald-700 text-base">+${summary.grossProfit.toLocaleString()}</span>
-              </div>
-
-              <div className="px-4 py-3 flex justify-between items-center hover:bg-slate-50/50">
-                <div className="pl-4">
-                  <span className="font-medium text-slate-700">Operating Expenses (Kharashaadka Hawlgalka Guud)</span>
-                  <p className="text-[11px] text-slate-400">Kira, koronto, internet, iyo kharashaadka maalinlaha ah</p>
-                </div>
-                <span className="font-bold text-rose-600">(${summary.totalExpenses.toLocaleString()})</span>
-              </div>
-
-              <div className="px-4 py-3.5 flex justify-between items-center bg-slate-900 text-white">
-                <div>
-                  <span className="text-emerald-400 font-black text-base">NET PROFIT (Faa'iidada Saafiga ah ee Ganacsiga)</span>
-                  <p className="text-[11px] text-slate-400">Gross Profit (${summary.grossProfit}) - Expenses (${summary.totalExpenses})</p>
-                </div>
-                <div className="text-right">
-                  <span className="font-black text-emerald-400 text-2xl">${summary.netProfit.toLocaleString()}</span>
-                  <span className="block text-[10px] text-slate-400">Net Business Earnings</span>
-                </div>
-              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* 2. DAILY REPORT (Section 14 in prompt) */}
+      {/* 2. DAILY REPORT */}
       {reportTab === 'daily' && (
         <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
@@ -315,7 +235,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
       )}
 
-      {/* 3. MONTHLY REPORT (Section 14 in prompt) */}
+      {/* 3. MONTHLY REPORT */}
       {reportTab === 'monthly' && (
         <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
@@ -352,100 +272,162 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
       )}
 
-      {/* 4. PARTNER REPORT (Section 14 & Partner Reports requirement) */}
+      {/* 4. PARTNER REPORT (Section 6: Partner Reporting Specifications) */}
       {reportTab === 'partner' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <div className="bg-white rounded-2xl p-5 border-2 border-blue-200 space-y-4">
-            <h3 className="font-black text-base text-slate-900 flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full bg-blue-600"></span>
-                <span>Zakariye Report</span>
+        <div className="space-y-4">
+          {/* Combined Total Summary Card */}
+          <div className="p-4 rounded-xl bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div>
+              <span className="text-slate-400 block text-[10px] uppercase font-bold">
+                Combined Partners Capital Summary (Wadarta Guud ee Labada Shuraako)
               </span>
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
-                Partner 1
+              <span className="text-xl font-black text-white">
+                Total Capital: ${summary.totalCapital.toLocaleString()}
               </span>
-            </h3>
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span className="text-slate-600 font-medium">Phones Acquired (Teleefannada uu keenay/helay):</span>
-                <span className="font-bold text-slate-900">
-                  {summary.zakariyePhonesAcquired} teleefan
-                </span>
+            </div>
+            <div className="flex items-center gap-4 text-xs">
+              <div>
+                <span className="text-slate-400 block text-[10px]">Purchase Capital:</span>
+                <span className="font-bold text-white">${summary.totalPurchaseCapital}</span>
               </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span className="text-slate-600 font-medium">Capital Funded (Lafaha uu bixiyay):</span>
-                <span className="font-black text-blue-700">
-                  ${summary.zakariyeTotalCapital}
-                </span>
+              <span className="text-slate-500 font-bold">+</span>
+              <div>
+                <span className="text-amber-400 block text-[10px]">Repair Capital:</span>
+                <span className="font-bold text-amber-400">${summary.totalRepairCapital}</span>
               </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span className="text-slate-500">Phones Funded (Teleefannada uu lacagtooda bixiyay):</span>
-                <span className="font-bold text-slate-800">
-                  {summary.zakariyePhonesCount} teleefan
-                </span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span className="text-slate-500">Inventory Value (Hadda Kaydka ku jira):</span>
-                <span className="font-bold text-slate-800">
-                  ${summary.zakariyeInStockCapital}
-                </span>
-              </div>
-              <div className="flex justify-between py-1.5">
-                <span className="text-slate-500">Phones Sold (Iibsamay):</span>
-                <span className="font-bold text-emerald-700">
-                  {summary.zakariyeSoldCount} teleefan
-                </span>
+              <span className="text-slate-500 font-bold">=</span>
+              <div>
+                <span className="text-emerald-400 block text-[10px]">Combined:</span>
+                <span className="font-bold text-emerald-400">${summary.totalCapital}</span>
               </div>
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl p-5 border-2 border-emerald-200 space-y-4">
-            <h3 className="font-black text-base text-slate-900 flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full bg-emerald-600"></span>
-                <span>Shariif Report</span>
-              </span>
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
-                Partner 2
-              </span>
-            </h3>
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span className="text-slate-600 font-medium">Phones Acquired (Teleefannada uu keenay/helay):</span>
-                <span className="font-bold text-slate-900">
-                  {summary.shariifPhonesAcquired} teleefan
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Zakariye Report */}
+            <div className="bg-white rounded-2xl p-5 border-2 border-blue-200 space-y-4">
+              <h3 className="font-black text-base text-slate-900 flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-blue-600"></span>
+                  <span>Zakariye Report</span>
                 </span>
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
+                  Partner 1
+                </span>
+              </h3>
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-600 font-medium">Purchase Capital Funded:</span>
+                  <span className="font-bold text-slate-900">
+                    ${summary.zakariyePurchaseCapital}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-600 font-medium flex items-center gap-1">
+                    <Wrench className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Repair Capital Funded:</span>
+                  </span>
+                  <span className="font-bold text-amber-700">
+                    ${summary.zakariyeRepairCapital}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100 bg-blue-50/50 px-2 rounded-lg font-bold">
+                  <span className="text-blue-900">Total Capital Funded:</span>
+                  <span className="text-blue-700 font-black">
+                    ${summary.zakariyeTotalCapital}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-600 font-medium">Phones Acquired (Keenay):</span>
+                  <span className="font-bold text-slate-900">
+                    {summary.zakariyePhonesAcquired} teleefan
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-500">Phones Currently in Stock:</span>
+                  <span className="font-bold text-blue-700">
+                    {summary.zakariyeInStockCount} teleefan
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-500">Phones Sold:</span>
+                  <span className="font-bold text-emerald-700">
+                    {summary.zakariyeSoldCount} teleefan
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5">
+                  <span className="text-slate-500">Inventory Cost (Hadda Kaydka):</span>
+                  <span className="font-bold text-slate-800">
+                    ${summary.zakariyeInStockCapital}
+                  </span>
+                </div>
               </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span className="text-slate-600 font-medium">Capital Funded (Lafaha uu bixiyay):</span>
-                <span className="font-black text-emerald-700">
-                  ${summary.shariifTotalCapital}
+            </div>
+
+            {/* Shariif Report */}
+            <div className="bg-white rounded-2xl p-5 border-2 border-emerald-200 space-y-4">
+              <h3 className="font-black text-base text-slate-900 flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-emerald-600"></span>
+                  <span>Shariif Report</span>
                 </span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span className="text-slate-500">Phones Funded (Teleefannada uu lacagtooda bixiyay):</span>
-                <span className="font-bold text-slate-800">
-                  {summary.shariifPhonesCount} teleefan
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                  Partner 2
                 </span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span className="text-slate-500">Inventory Value (Hadda Kaydka ku jira):</span>
-                <span className="font-bold text-slate-800">
-                  ${summary.shariifInStockCapital}
-                </span>
-              </div>
-              <div className="flex justify-between py-1.5">
-                <span className="text-slate-500">Phones Sold (Iibsamay):</span>
-                <span className="font-bold text-emerald-700">
-                  {summary.shariifSoldCount} teleefan
-                </span>
+              </h3>
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-600 font-medium">Purchase Capital Funded:</span>
+                  <span className="font-bold text-slate-900">
+                    ${summary.shariifPurchaseCapital}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-600 font-medium flex items-center gap-1">
+                    <Wrench className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Repair Capital Funded:</span>
+                  </span>
+                  <span className="font-bold text-amber-700">
+                    ${summary.shariifRepairCapital}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100 bg-emerald-50/50 px-2 rounded-lg font-bold">
+                  <span className="text-emerald-900">Total Capital Funded:</span>
+                  <span className="text-emerald-700 font-black">
+                    ${summary.shariifTotalCapital}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-600 font-medium">Phones Acquired (Keenay):</span>
+                  <span className="font-bold text-slate-900">
+                    {summary.shariifPhonesAcquired} teleefan
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-500">Phones Currently in Stock:</span>
+                  <span className="font-bold text-emerald-700">
+                    {summary.shariifInStockCount} teleefan
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100">
+                  <span className="text-slate-500">Phones Sold:</span>
+                  <span className="font-bold text-emerald-700">
+                    {summary.shariifSoldCount} teleefan
+                  </span>
+                </div>
+                <div className="flex justify-between py-1.5">
+                  <span className="text-slate-500">Inventory Cost (Hadda Kaydka):</span>
+                  <span className="font-bold text-slate-800">
+                    ${summary.shariifInStockCapital}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* 5. INVENTORY REPORT (Section 14 in prompt) */}
+      {/* 5. INVENTORY REPORT */}
       {reportTab === 'inventory' && (
         <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-4">
           <h3 className="font-black text-base text-slate-900">Inventory Valuation Report</h3>

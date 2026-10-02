@@ -21,7 +21,9 @@ import {
   SafeUser,
   UserRole,
   AuditLogRecord,
+  PhoneRepairRecord,
 } from '../src/types/accounting.ts';
+import { calculateSummary } from '../src/services/accountingService.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -259,12 +261,40 @@ export function initDatabase(): void {
     );
   `);
 
+  // 11. Phone Repairs Table (Maintenance / Repairs Costs)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS phone_repairs (
+      id TEXT PRIMARY KEY,
+      phone_id TEXT NOT NULL REFERENCES phones(id) ON DELETE CASCADE,
+      description TEXT NOT NULL,
+      repair_cost REAL NOT NULL,
+      repair_date TEXT NOT NULL,
+      paid_by_partner_id INTEGER NOT NULL REFERENCES partners(id),
+      capital_owner_partner_id INTEGER NOT NULL REFERENCES partners(id),
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT
+    );
+  `);
+
+  // Safe Idempotent Schema Migration for Sales Table (adds repair_cost & total_cost if missing)
+  const salesCols = (db.prepare("PRAGMA table_info('sales');").all() as any[]).map((c) => c.name);
+  if (!salesCols.includes('repair_cost')) {
+    db.exec('ALTER TABLE sales ADD COLUMN repair_cost REAL DEFAULT 0;');
+  }
+  if (!salesCols.includes('total_cost')) {
+    db.exec('ALTER TABLE sales ADD COLUMN total_cost REAL;');
+  }
+
   // Indexes for high performance
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_phones_status ON phones(status);
     CREATE INDEX IF NOT EXISTS idx_phones_paid_by ON phones(paid_by_partner_id);
     CREATE INDEX IF NOT EXISTS idx_phones_acquired_by ON phones(acquired_by_partner_id);
     CREATE INDEX IF NOT EXISTS idx_phones_imei ON phones(imei);
+    CREATE INDEX IF NOT EXISTS idx_repairs_phone_id ON phone_repairs(phone_id);
+    CREATE INDEX IF NOT EXISTS idx_repairs_paid_by ON phone_repairs(paid_by_partner_id);
+    CREATE INDEX IF NOT EXISTS idx_repairs_date ON phone_repairs(repair_date);
     CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type);
     CREATE INDEX IF NOT EXISTS idx_transactions_partner ON transactions(partner_id);
     CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
@@ -556,6 +586,10 @@ export function restoreDatabaseBackup(backupFilename: string): { success: boolea
         db.prepare("SELECT name FROM backup_source.sqlite_master WHERE type='table'").all() as { name: string }[]
       ).map((r) => r.name);
 
+      if (backupTables.includes('phone_repairs')) {
+        db.exec('DELETE FROM phone_repairs;');
+        db.exec('INSERT INTO phone_repairs SELECT * FROM backup_source.phone_repairs;');
+      }
       if (backupTables.includes('users')) {
         db.exec('DELETE FROM users;');
         db.exec('INSERT INTO users SELECT * FROM backup_source.users;');
@@ -634,6 +668,7 @@ export function checkDatabaseHealth(): {
     const usersCount = (db.prepare('SELECT COUNT(*) as c FROM users;').get() as { c: number }).c;
     const activeSessionsCount = (db.prepare('SELECT COUNT(*) as c FROM sessions;').get() as { c: number }).c;
     const auditLogsCount = (db.prepare('SELECT COUNT(*) as c FROM audit_logs;').get() as { c: number }).c;
+    const repairsCount = (db.prepare('SELECT COUNT(*) as c FROM phone_repairs;').get() as { c: number }).c;
 
     const stats = fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH) : { size: 0 };
     const isHealthy =
@@ -661,6 +696,7 @@ export function checkDatabaseHealth(): {
         users: usersCount,
         sessions: activeSessionsCount,
         audit_logs: auditLogsCount,
+        phone_repairs: repairsCount,
       },
       totalPhones: phonesCount,
       totalTransactions: transactionsCount,
@@ -1407,9 +1443,203 @@ export function revokeSession(token: string): void {
   db.prepare('DELETE FROM auth_sessions WHERE token = ?').run(cleanToken);
 }
 
+// ----------------- PHONE REPAIRS OPERATIONS -----------------
+
+export function getRepairsForPhone(phoneId: string): PhoneRepairRecord[] {
+  try {
+    const rows = db.prepare(`
+      SELECT id, phone_id, description, repair_cost, repair_date,
+             paid_by_partner_id, capital_owner_partner_id, notes, created_at, updated_at
+      FROM phone_repairs
+      WHERE phone_id = ?
+      ORDER BY repair_date ASC, created_at ASC
+    `).all(phoneId) as any[];
+
+    return rows.map((r) => ({
+      id: r.id,
+      phoneId: r.phone_id,
+      description: r.description,
+      repairCost: Number(r.repair_cost),
+      repairDate: r.repair_date,
+      paidBy: r.paid_by_partner_id as 1 | 2,
+      capitalOwner: (r.capital_owner_partner_id || r.paid_by_partner_id) as 1 | 2,
+      notes: r.notes || undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at || undefined,
+    }));
+  } catch (e) {
+    return [];
+  }
+}
+
+export function getRepairById(id: string): PhoneRepairRecord | null {
+  try {
+    const r = db.prepare(`
+      SELECT id, phone_id, description, repair_cost, repair_date,
+             paid_by_partner_id, capital_owner_partner_id, notes, created_at, updated_at
+      FROM phone_repairs
+      WHERE id = ?
+    `).get(id) as any;
+
+    if (!r) return null;
+    return {
+      id: r.id,
+      phoneId: r.phone_id,
+      description: r.description,
+      repairCost: Number(r.repair_cost),
+      repairDate: r.repair_date,
+      paidBy: r.paid_by_partner_id as 1 | 2,
+      capitalOwner: (r.capital_owner_partner_id || r.paid_by_partner_id) as 1 | 2,
+      notes: r.notes || undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at || undefined,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+export function createPhoneRepairAtomic(
+  data: {
+    phoneId: string;
+    description: string;
+    repairCost: number;
+    repairDate: string;
+    paidBy: 1 | 2;
+    capitalOwner?: 1 | 2;
+    notes?: string;
+  },
+  user?: SafeUser
+): { success: boolean; repair?: PhoneRepairRecord; phone?: PhoneRecord; error?: string } {
+  const phone = getPhoneById(data.phoneId);
+  if (!phone) {
+    return { success: false, error: 'Teleefankan lama helin (Phone not found)!' };
+  }
+
+  const costNum = Number(data.repairCost);
+  if (isNaN(costNum) || costNum <= 0) {
+    return { success: false, error: 'Qarashka dayactirka waa inuu ka weyn yahay $0 (Repair cost must be > $0)!' };
+  }
+
+  if (data.paidBy !== 1 && data.paidBy !== 2) {
+    return { success: false, error: 'Partner-ku waa inuu ahaadaa Zakariye (1) ama Shariif (2)!' };
+  }
+
+  const funderId = data.paidBy;
+  const capitalOwnerId = data.capitalOwner || funderId;
+  const funderName = funderId === 1 ? 'Zakariye' : 'Shariif';
+  const cleanDesc = String(data.description || 'Dayactir').trim();
+  const repairId = `REP-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const txnId = `TXN-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const now = new Date().toISOString();
+  const repDate = data.repairDate || now.split('T')[0];
+
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    db.prepare(`
+      INSERT INTO phone_repairs (
+        id, phone_id, description, repair_cost, repair_date,
+        paid_by_partner_id, capital_owner_partner_id, notes, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      repairId,
+      phone.id,
+      cleanDesc,
+      costNum,
+      repDate,
+      funderId,
+      capitalOwnerId,
+      data.notes ? data.notes.trim() : null,
+      now
+    );
+
+    // Atomic transaction record in ledger
+    const txnDesc = `Repair: ${phone.model} - ${cleanDesc} (Bixiyay: ${funderName} $${costNum})`;
+    db.prepare(`
+      INSERT INTO transactions (
+        id, type, partner_id, acquired_by_partner_id, paid_by_partner_id,
+        phone_id, amount, description, date, reference, impact, created_at
+      ) VALUES (?, 'Phone Repair', ?, ?, ?, ?, ?, ?, ?, ?, 'CAPITAL_IN', ?)
+    `).run(
+      txnId,
+      funderId,
+      phone.acquiredBy,
+      funderId,
+      phone.id,
+      costNum,
+      txnDesc,
+      repDate,
+      repairId,
+      now
+    );
+
+    db.exec('COMMIT;');
+
+    addAuditLog({
+      userId: user?.id,
+      username: user?.username || funderName,
+      action: 'PHONE_REPAIR_ADDED',
+      entityType: 'phone_repair',
+      entityId: repairId,
+      details: `Dayactir ku dar: ${phone.model} - $${costNum} (${cleanDesc}, Lacag-bixiye: ${funderName})`,
+    });
+
+    const updatedPhone = getPhoneById(phone.id)!;
+    const createdRepair: PhoneRepairRecord = {
+      id: repairId,
+      phoneId: phone.id,
+      description: cleanDesc,
+      repairCost: costNum,
+      repairDate: repDate,
+      paidBy: funderId,
+      capitalOwner: capitalOwnerId,
+      notes: data.notes ? data.notes.trim() : undefined,
+      createdAt: now,
+    };
+
+    return { success: true, repair: createdRepair, phone: updatedPhone };
+  } catch (err: any) {
+    db.exec('ROLLBACK;');
+    return { success: false, error: err.message || 'Khalad ayaa dhacay intii lagu jiray kaydinta dayactirka' };
+  }
+}
+
+export function deletePhoneRepair(id: string, user?: SafeUser): { success: boolean; error?: string } {
+  const current = getRepairById(id);
+  if (!current) {
+    return { success: false, error: 'Dayactirkan lama helin!' };
+  }
+
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    db.prepare('DELETE FROM transactions WHERE reference = ?').run(id);
+    db.prepare('DELETE FROM phone_repairs WHERE id = ?').run(id);
+    db.exec('COMMIT;');
+
+    addAuditLog({
+      userId: user?.id,
+      username: user?.username || 'SYSTEM',
+      action: 'PHONE_REPAIR_DELETED',
+      entityType: 'phone_repair',
+      entityId: id,
+      details: `Tirtiray dayactir: ID ${id} ($${current.repairCost})`,
+    });
+
+    return { success: true };
+  } catch (e: any) {
+    db.exec('ROLLBACK;');
+    return { success: false, error: e.message };
+  }
+}
+
 // ----------------- PHONE & INVENTORY OPERATIONS -----------------
 
 function mapPhoneRow(r: any): PhoneRecord {
+  const repairs = getRepairsForPhone(r.id);
+  const repairCost = repairs.reduce((sum, rep) => sum + rep.repairCost, 0);
+  const purchasePrice = Number(r.purchase_price);
+  const totalCost = purchasePrice + repairCost;
+
   return {
     id: r.id,
     imei: r.imei,
@@ -1418,7 +1648,10 @@ function mapPhoneRow(r: any): PhoneRecord {
     storage: r.storage,
     color: r.color || undefined,
     condition: r.condition,
-    purchasePrice: Number(r.purchase_price),
+    purchasePrice,
+    repairCost,
+    totalCost,
+    repairs,
     acquiredBy: r.acquired_by_partner_id as 1 | 2,
     paidBy: r.paid_by_partner_id as 1 | 2,
     capitalOwner: r.capital_owner_partner_id as 1 | 2,
@@ -1490,6 +1723,14 @@ export function createPhoneAtomic(data: {
   paidBy: 1 | 2;
   purchaseDate: string;
   notes?: string;
+  repairs?: Array<{
+    description: string;
+    repairCost: number;
+    repairDate: string;
+    paidBy: 1 | 2;
+    capitalOwner?: 1 | 2;
+    notes?: string;
+  }>;
 }): { success: boolean; phone?: PhoneRecord; error?: string } {
   const cleanImei = data.imei.trim();
   const existing = getPhoneByImei(cleanImei);
@@ -1536,7 +1777,7 @@ export function createPhoneAtomic(data: {
       createdAt
     );
 
-    // Atomic transaction record
+    // Atomic transaction record for purchase
     db.prepare(`
       INSERT INTO transactions (
         id, type, partner_id, acquired_by_partner_id, paid_by_partner_id,
@@ -1554,6 +1795,57 @@ export function createPhoneAtomic(data: {
       phoneId,
       createdAt
     );
+
+    // Optional Initial Repairs attached during phone intake
+    if (data.repairs && Array.isArray(data.repairs)) {
+      for (const rep of data.repairs) {
+        const costNum = Number(rep.repairCost || 0);
+        if (costNum > 0) {
+          const repId = `REP-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+          const repTxnId = `TXN-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+          const repFunder = rep.paidBy || data.paidBy;
+          const repCapitalOwner = rep.capitalOwner || repFunder;
+          const repFunderName = repFunder === 1 ? 'Zakariye' : 'Shariif';
+          const repDesc = String(rep.description || 'Dayactir').trim();
+          const repDate = rep.repairDate || data.purchaseDate;
+
+          db.prepare(`
+            INSERT INTO phone_repairs (
+              id, phone_id, description, repair_cost, repair_date,
+              paid_by_partner_id, capital_owner_partner_id, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            repId,
+            phoneId,
+            repDesc,
+            costNum,
+            repDate,
+            repFunder,
+            repCapitalOwner,
+            rep.notes ? rep.notes.trim() : null,
+            createdAt
+          );
+
+          db.prepare(`
+            INSERT INTO transactions (
+              id, type, partner_id, acquired_by_partner_id, paid_by_partner_id,
+              phone_id, amount, description, date, reference, impact, created_at
+            ) VALUES (?, 'Phone Repair', ?, ?, ?, ?, ?, ?, ?, ?, 'CAPITAL_IN', ?)
+          `).run(
+            repTxnId,
+            repFunder,
+            data.acquiredBy,
+            repFunder,
+            phoneId,
+            costNum,
+            `Repair: ${data.model} - ${repDesc} (${repFunderName} $${costNum})`,
+            repDate,
+            repId,
+            createdAt
+          );
+        }
+      }
+    }
 
     db.exec('COMMIT;');
 
@@ -1659,7 +1951,11 @@ export function sellPhoneAtomic(
     return { success: false, error: 'Teleefankan mar hore ayaa la iibiyay!' };
   }
 
-  const profit = saleData.salePrice - phone.purchasePrice;
+  const repairs = getRepairsForPhone(phone.id);
+  const repairCost = repairs.reduce((sum, r) => sum + r.repairCost, 0);
+  const totalCost = phone.purchasePrice + repairCost;
+  const profit = saleData.salePrice - totalCost;
+
   const funderId = phone.paidBy || phone.capitalOwner || phone.purchasedBy;
   const acqId = phone.acquiredBy || funderId;
   const funderName = funderId === 1 ? 'Zakariye' : 'Shariif';
@@ -1669,7 +1965,9 @@ export function sellPhoneAtomic(
   const now = new Date().toISOString();
 
   const saleDesc =
-    acqId !== funderId
+    repairCost > 0
+      ? `Iibka ${phone.model}: $${saleData.salePrice} (Wadarta Lafaha: $${totalCost} [Gadasho: $${phone.purchasePrice}, Dayactir: $${repairCost}], Faa'iido: $${profit})`
+      : acqId !== funderId
       ? `Iibka ${phone.model}: $${saleData.salePrice} (Lafaha ${funderName}: $${phone.purchasePrice}, Keenay: ${acqName}, Faa'iido: $${profit})`
       : `Iibka ${phone.model}: $${saleData.salePrice} (Lafaha ${funderName}: $${phone.purchasePrice}, Faa'iido: $${profit})`;
 
@@ -1698,13 +1996,13 @@ export function sellPhoneAtomic(
       phoneId
     );
 
-    // 2. Insert into Sales table
+    // 2. Insert into Sales table (including repair_cost & total_cost)
     db.prepare(`
       INSERT INTO sales (
-        id, phone_id, phone_model, imei, sale_price, purchase_price, profit,
+        id, phone_id, phone_model, imei, sale_price, purchase_price, repair_cost, total_cost, profit,
         partner_id, acquired_by_partner_id, paid_by_partner_id, sale_date,
         customer_name, customer_phone, payment_method, notes, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       saleId,
       phone.id,
@@ -1712,6 +2010,8 @@ export function sellPhoneAtomic(
       phone.imei,
       saleData.salePrice,
       phone.purchasePrice,
+      repairCost,
+      totalCost,
       profit,
       funderId,
       acqId,
@@ -1984,90 +2284,5 @@ export function getDatabaseSummary(): AccountingSummary {
   const phones = getPhones();
   const expenses = getExpenses();
   const withdrawals = getWithdrawals();
-
-  // Helper to determine capital owner (paidBy takes precedence over legacy purchasedBy)
-  const getFunder = (p: PhoneRecord): number => p.paidBy || p.capitalOwner || p.purchasedBy;
-  const getAcquirer = (p: PhoneRecord): number => p.acquiredBy || p.purchasedBy;
-
-  // Zakariye (PartnerId = 1)
-  const zakariyeFundedPhones = phones.filter((p) => getFunder(p) === 1);
-  const zakariyeAcquiredPhones = phones.filter((p) => getAcquirer(p) === 1);
-
-  const zakariyeInStock = zakariyeFundedPhones.filter((p) => p.status === 'In Stock');
-  const zakariyeSold = zakariyeFundedPhones.filter((p) => p.status === 'Sold');
-
-  const zakariyeInStockCapital = zakariyeInStock.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
-  const zakariyeSoldCapital = zakariyeSold.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
-  const zakariyeTotalCapital = zakariyeInStockCapital + zakariyeSoldCapital;
-  const zakariyeWithdrawals = withdrawals
-    .filter((w) => w.partnerId === 1)
-    .reduce((sum, w) => sum + Number(w.amount || 0), 0);
-
-  // Shariif (PartnerId = 2)
-  const shariifFundedPhones = phones.filter((p) => getFunder(p) === 2);
-  const shariifAcquiredPhones = phones.filter((p) => getAcquirer(p) === 2);
-
-  const shariifInStock = shariifFundedPhones.filter((p) => p.status === 'In Stock');
-  const shariifSold = shariifFundedPhones.filter((p) => p.status === 'Sold');
-
-  const shariifInStockCapital = shariifInStock.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
-  const shariifSoldCapital = shariifSold.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
-  const shariifTotalCapital = shariifInStockCapital + shariifSoldCapital;
-  const shariifWithdrawals = withdrawals
-    .filter((w) => w.partnerId === 2)
-    .reduce((sum, w) => sum + Number(w.amount || 0), 0);
-
-  // Overall Phone Metrics
-  const inStockPhones = phones.filter((p) => p.status === 'In Stock');
-  const soldPhones = phones.filter((p) => p.status === 'Sold');
-  const returnedPhones = phones.filter((p) => p.status === 'Returned');
-
-  const totalCapital = zakariyeTotalCapital + shariifTotalCapital;
-  const totalInStockCapital = zakariyeInStockCapital + shariifInStockCapital;
-  const totalSoldCapital = zakariyeSoldCapital + shariifSoldCapital;
-
-  // Sales & Profit (Business Level Shared Total, strictly whole business)
-  const totalSales = soldPhones.reduce((sum, p) => sum + Number(p.salePrice || 0), 0);
-  const grossProfit = totalSales - totalSoldCapital;
-
-  // Expenses
-  const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-  const netProfit = grossProfit - totalExpenses;
-
-  const totalWithdrawals = zakariyeWithdrawals + shariifWithdrawals;
-
-  return {
-    zakariyeTotalCapital,
-    zakariyeInStockCapital,
-    zakariyeSoldCapital,
-    zakariyePhonesCount: zakariyeFundedPhones.length,
-    zakariyePhonesAcquired: zakariyeAcquiredPhones.length,
-    zakariyeInStockCount: zakariyeInStock.length,
-    zakariyeSoldCount: zakariyeSold.length,
-    zakariyeWithdrawals,
-
-    shariifTotalCapital,
-    shariifInStockCapital,
-    shariifSoldCapital,
-    shariifPhonesCount: shariifFundedPhones.length,
-    shariifPhonesAcquired: shariifAcquiredPhones.length,
-    shariifInStockCount: shariifInStock.length,
-    shariifSoldCount: shariifSold.length,
-    shariifWithdrawals,
-
-    totalPhones: phones.length,
-    phonesInStock: inStockPhones.length,
-    phonesSold: soldPhones.length,
-    phonesReturned: returnedPhones.length,
-
-    totalCapital,
-    totalInStockCapital,
-    totalSoldCapital,
-
-    totalSales,
-    grossProfit,
-    totalExpenses,
-    netProfit,
-    totalWithdrawals,
-  };
+  return calculateSummary(phones, expenses, withdrawals);
 }

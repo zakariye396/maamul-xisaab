@@ -464,6 +464,69 @@ export default function App() {
     }
   };
 
+  const handleAddRepair = async (
+    phoneId: string,
+    repairData: {
+      description: string;
+      repairCost: number;
+      repairDate: string;
+      paidBy: 1 | 2;
+      capitalOwner?: 1 | 2;
+      notes?: string;
+    }
+  ) => {
+    try {
+      const res = await fetch(`/api/phones/${phoneId}/repairs`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        credentials: 'include',
+        body: JSON.stringify(repairData),
+      });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        showToast(data.error || 'Qalad ayaa ka dhacay qorista dayactirka', true);
+        return;
+      }
+
+      await fetchAllData();
+      showToast(data.message || 'Dayactirka si guul leh ayaa loogu daray!');
+    } catch (err: any) {
+      showToast('Khalad xagga server-ka ah ayaa dhacay', true);
+    }
+  };
+
+  const handleDeleteRepair = async (repairId: string) => {
+    try {
+      const res = await fetch(`/api/repairs/${repairId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+        credentials: 'include',
+      });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        return;
+      }
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        showToast(data.error || 'Qalad ayaa ka dhacay tirtirista dayactirka', true);
+        return;
+      }
+
+      await fetchAllData();
+      showToast('Dayactirka waa la tirtiray');
+    } catch (err: any) {
+      showToast('Khalad xagga server-ka ah ayaa dhacay', true);
+    }
+  };
+
   const handleResetData = async () => {
     if (confirm('Ma hubtaa inaad dib ugu celiso xogtii rasmiga ahayd ee tijaabada ee database-ka?')) {
       try {
@@ -704,6 +767,8 @@ export default function App() {
               onOpenSellModal={(p) => setPhoneToSell(p)}
               setActiveTab={setActiveTab}
               onLoadTestCase={handleLoadTestCase}
+              onAddRepair={handleAddRepair}
+              onDeleteRepair={handleDeleteRepair}
             />
           )}
 
@@ -717,6 +782,8 @@ export default function App() {
               onOpenEditModal={(p) => setPhoneToEdit(p)}
               onDeletePhone={handleDeletePhone}
               onOpenAddPhone={() => setIsAddModalOpen(true)}
+              onAddRepair={handleAddRepair}
+              onDeleteRepair={handleDeleteRepair}
             />
           )}
 
@@ -736,6 +803,8 @@ export default function App() {
               phones={phones}
               transactions={transactions}
               onOpenSellModal={(p) => setPhoneToSell(p)}
+              onAddRepair={handleAddRepair}
+              onDeleteRepair={handleDeleteRepair}
             />
           )}
 

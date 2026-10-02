@@ -123,6 +123,18 @@ export const CapitalView: React.FC<CapitalViewProps> = ({
 
           <div className="pt-3 border-t border-slate-100 space-y-2 text-xs">
             <div className="flex justify-between">
+              <span className="text-slate-500">Purchase Capital (Gadasho):</span>
+              <span className="font-bold text-slate-800">${summary.zakariyePurchaseCapital}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Repair Capital (Dayactir):</span>
+              <span className="font-bold text-amber-700">${summary.zakariyeRepairCapital}</span>
+            </div>
+            <div className="flex justify-between font-bold text-blue-900 bg-blue-50/50 px-1.5 py-0.5 rounded">
+              <span>Wadarta Lafaha (Total Capital):</span>
+              <span className="text-blue-700 font-black">${zakariyeTotal}</span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-slate-500">Lafaha Hadda Kaydka Yaal:</span>
               <span className="font-bold text-blue-700">${zakariyeInStock}</span>
             </div>
@@ -167,6 +179,18 @@ export const CapitalView: React.FC<CapitalViewProps> = ({
 
           <div className="pt-3 border-t border-slate-100 space-y-2 text-xs">
             <div className="flex justify-between">
+              <span className="text-slate-500">Purchase Capital (Gadasho):</span>
+              <span className="font-bold text-slate-800">${summary.shariifPurchaseCapital}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Repair Capital (Dayactir):</span>
+              <span className="font-bold text-amber-700">${summary.shariifRepairCapital}</span>
+            </div>
+            <div className="flex justify-between font-bold text-emerald-900 bg-emerald-50/50 px-1.5 py-0.5 rounded">
+              <span>Wadarta Lafaha (Total Capital):</span>
+              <span className="text-emerald-700 font-black">${summary.shariifTotalCapital}</span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-slate-500">Lafaha Hadda Kaydka Yaal:</span>
               <span className="font-bold text-emerald-700">${summary.shariifInStockCapital}</span>
             </div>
@@ -195,7 +219,7 @@ export const CapitalView: React.FC<CapitalViewProps> = ({
               ${summary.totalCapital.toLocaleString()}
             </div>
             <p className="text-xs text-slate-400">
-              Zakariye (${zakariyeTotal}) + Shariif (${summary.shariifTotalCapital})
+              Purchase: ${summary.totalPurchaseCapital} · Repairs: ${summary.totalRepairCapital}
             </p>
           </div>
 

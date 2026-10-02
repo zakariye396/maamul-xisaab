@@ -22,6 +22,9 @@ import {
   updatePhone,
   sellPhoneAtomic,
   deletePhone,
+  getRepairsForPhone,
+  createPhoneRepairAtomic,
+  deletePhoneRepair,
   getExpenses,
   createExpenseAtomic,
   deleteExpense,
@@ -463,6 +466,7 @@ async function startServer() {
       paidBy: paidId,
       purchaseDate: purchaseDate || new Date().toISOString().split('T')[0],
       notes: notes ? String(notes).trim() : undefined,
+      repairs: Array.isArray(req.body.repairs) ? req.body.repairs : undefined,
     });
 
     if (!result.success) {
@@ -477,6 +481,77 @@ async function startServer() {
       success: true,
       message: `Teleefanka ${result.phone?.model} si guul leh ayaa loogu qoray database-ka (Lafaha: ${paidName} $${priceNum}, Keenay: ${acqName})!`,
       phone: result.phone,
+      summary,
+    });
+  });
+
+  // ----------------- PHONE REPAIRS API -----------------
+
+  app.get('/api/phones/:id/repairs', requireAuth, (req, res) => {
+    const { id } = req.params;
+    const repairs = getRepairsForPhone(id);
+    res.json({ success: true, data: repairs });
+  });
+
+  app.post('/api/phones/:id/repairs', requireAuth, (req: AuthenticatedRequest, res) => {
+    const { id } = req.params;
+    const { description, repairCost, repairDate, paidBy, capitalOwner, notes } = req.body;
+
+    const costNum = Number(repairCost);
+    const paidId = Number(paidBy || capitalOwner || 1) as 1 | 2;
+    const ownerId = Number(capitalOwner || paidId) as 1 | 2;
+
+    if (!description || isNaN(costNum) || costNum <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Fadlan geli faahfaahinta iyo qarash sax ah oo ka weyn $0!',
+      });
+    }
+
+    if (paidId !== 1 && paidId !== 2) {
+      return res.status(400).json({
+        success: false,
+        error: 'Partner-ka bixiyay waa inuu ahaadaa Zakariye (1) ama Shariif (2)!',
+      });
+    }
+
+    const result = createPhoneRepairAtomic(
+      {
+        phoneId: id,
+        description: String(description).trim(),
+        repairCost: costNum,
+        repairDate: repairDate || new Date().toISOString().split('T')[0],
+        paidBy: paidId,
+        capitalOwner: ownerId,
+        notes: notes ? String(notes).trim() : undefined,
+      },
+      req.user
+    );
+
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    const summary = getDatabaseSummary();
+    res.status(201).json({
+      success: true,
+      message: `Dayactirka $${costNum} si guul leh ayaa loogu daray teleefanka!`,
+      repair: result.repair,
+      phone: result.phone,
+      summary,
+    });
+  });
+
+  app.delete('/api/repairs/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+    const { id } = req.params;
+    const result = deletePhoneRepair(id, req.user);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    const summary = getDatabaseSummary();
+    res.json({
+      success: true,
+      message: 'Dayactirka waa laga tirtiray nidaamka',
       summary,
     });
   });

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Smartphone, DollarSign, AlertCircle, Sparkles, Hash, User, Wallet, CheckCircle2 } from 'lucide-react';
+import { X, Smartphone, DollarSign, AlertCircle, Sparkles, Hash, User, Wallet, CheckCircle2, Wrench } from 'lucide-react';
 import { Partner, PhoneCondition, PhoneRecord } from '../types/accounting';
 
 interface AddPhoneModalProps {
@@ -36,6 +36,13 @@ export const AddPhoneModal: React.FC<AddPhoneModalProps> = ({
   );
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
+
+  // Repair / Maintenance information (Optional during intake)
+  const [hasRepair, setHasRepair] = useState(false);
+  const [repairDescription, setRepairDescription] = useState('Screen replacement / Shaashad');
+  const [repairCost, setRepairCost] = useState('');
+  const [repairDate, setRepairDate] = useState(new Date().toISOString().split('T')[0]);
+  const [repairPaidBy, setRepairPaidBy] = useState<1 | 2>(2); // Default to Shariif or Zakariye
 
   if (!isOpen) return null;
 
@@ -89,6 +96,24 @@ export const AddPhoneModal: React.FC<AddPhoneModalProps> = ({
 
     const finalImei = cleanImei || `IMEI-${Math.floor(100000000000000 + Math.random() * 900000000000000)}`;
 
+    const repairCostNum = parseFloat(repairCost);
+    if (hasRepair && (isNaN(repairCostNum) || repairCostNum <= 0)) {
+      setError('Fadlan geli qarashka dayactirka oo sax ah ama dami qaybta dayactirka!');
+      return;
+    }
+
+    const repairs = hasRepair && repairCostNum > 0
+      ? [
+          {
+            description: repairDescription.trim() || 'Dayactir guud',
+            repairCost: repairCostNum,
+            repairDate: repairDate || purchaseDate,
+            paidBy: repairPaidBy,
+            capitalOwner: repairPaidBy,
+          },
+        ]
+      : undefined;
+
     onAddPhone({
       imei: finalImei,
       brand,
@@ -103,6 +128,7 @@ export const AddPhoneModal: React.FC<AddPhoneModalProps> = ({
       purchasedBy: paidBy, // keep legacy field synced
       purchaseDate,
       notes: notes.trim() || undefined,
+      repairs: repairs as any,
     });
 
     // Reset & close
@@ -111,6 +137,8 @@ export const AddPhoneModal: React.FC<AddPhoneModalProps> = ({
     setImei('');
     setColor('');
     setNotes('');
+    setHasRepair(false);
+    setRepairCost('');
     setError('');
     onClose();
   };
@@ -402,6 +430,116 @@ export const AddPhoneModal: React.FC<AddPhoneModalProps> = ({
                 </span>
               </div>
             </div>
+          </div>
+
+          {/* SECTION 4: REPAIR / MAINTENANCE COSTS (Qarashka Dayactirka) */}
+          <div className="space-y-3 p-4 rounded-2xl bg-amber-50/50 border border-amber-200">
+            <div className="flex items-center justify-between border-b border-amber-200/80 pb-2">
+              <div className="flex items-center gap-2">
+                <Wrench className="w-4 h-4 text-amber-600" />
+                <h4 className="text-xs font-black uppercase tracking-wider text-amber-950">
+                  4. Repair / Maintenance Costs (Qarashka Dayactirka)
+                </h4>
+              </div>
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={hasRepair}
+                  onChange={(e) => setHasRepair(e.target.checked)}
+                  className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer"
+                />
+                <span className="text-xs font-bold text-amber-900">
+                  {hasRepair ? 'Dayactir Baa Jira (Yes)' : 'Dayactir Uma Baahna (No)'}
+                </span>
+              </label>
+            </div>
+
+            {hasRepair && (
+              <div className="space-y-3 animate-in fade-in duration-200 pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-amber-950 block mb-1">
+                      Faahfaahinta Dayactirka (Description) *
+                    </label>
+                    <input
+                      type="text"
+                      required={hasRepair}
+                      placeholder="Tusaale: Shaashad cusub, Baatari, Camera..."
+                      value={repairDescription}
+                      onChange={(e) => setRepairDescription(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-amber-300 text-xs font-semibold bg-white text-slate-900 focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-amber-950 block mb-1">
+                      Qarashka Dayactirka ($) *
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">
+                        $
+                      </span>
+                      <input
+                        type="number"
+                        step="any"
+                        required={hasRepair}
+                        placeholder="Tusaale: 15"
+                        value={repairCost}
+                        onChange={(e) => setRepairCost(e.target.value)}
+                        className="w-full pl-8 pr-3 py-2 rounded-xl border border-amber-300 text-sm font-bold bg-white text-slate-900 focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-amber-950 block mb-1">
+                      Taariikhda Dayactirka (Date) *
+                    </label>
+                    <input
+                      type="date"
+                      required={hasRepair}
+                      value={repairDate}
+                      onChange={(e) => setRepairDate(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-amber-300 text-xs font-semibold bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-amber-950 block mb-1">
+                      Waxaa Bixiyay / Capital Owner *
+                    </label>
+                    <select
+                      value={repairPaidBy}
+                      onChange={(e) => setRepairPaidBy(Number(e.target.value) as 1 | 2)}
+                      className="w-full px-3 py-2 rounded-xl border border-amber-300 text-xs font-bold bg-white text-amber-950"
+                    >
+                      <option value={1}>Zakariye</option>
+                      <option value={2}>Shariif</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Combined Cost Summary */}
+                <div className="p-3 rounded-xl bg-amber-100/70 border border-amber-300 text-amber-950 text-xs space-y-1.5">
+                  <div className="flex items-center justify-between font-bold">
+                    <span>Qiimaha Lafaha (Purchase Cost):</span>
+                    <span>${purchasePrice || '0'} ({capitalOwnerName})</span>
+                  </div>
+                  <div className="flex items-center justify-between font-bold">
+                    <span>Qarashka Dayactirka (Repair Cost):</span>
+                    <span>${repairCost || '0'} ({repairPaidBy === 1 ? 'Zakariye' : 'Shariif'})</span>
+                  </div>
+                  <div className="pt-1.5 border-t border-amber-300/80 flex items-center justify-between font-black text-sm text-slate-900">
+                    <span>Wadarta Qiimaha Teleefanka (Total Cost):</span>
+                    <span className="text-blue-700">
+                      ${(Number(purchasePrice || 0) + Number(repairCost || 0)).toFixed(2).replace(/\.00$/, '')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Notes */}

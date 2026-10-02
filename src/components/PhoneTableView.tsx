@@ -11,6 +11,7 @@ import {
   RotateCcw,
   Smartphone,
   Eye,
+  Wrench,
 } from 'lucide-react';
 import { Partner, PhoneRecord, TransactionRecord } from '../types/accounting';
 import { PhoneDetailsModal } from './PhoneDetailsModal';
@@ -24,6 +25,18 @@ interface PhoneTableViewProps {
   onOpenEditModal: (phone: PhoneRecord) => void;
   onDeletePhone: (phoneId: string) => void;
   onOpenAddPhone: () => void;
+  onAddRepair?: (
+    phoneId: string,
+    repair: {
+      description: string;
+      repairCost: number;
+      repairDate: string;
+      paidBy: 1 | 2;
+      capitalOwner?: 1 | 2;
+      notes?: string;
+    }
+  ) => Promise<void> | void;
+  onDeleteRepair?: (repairId: string) => Promise<void> | void;
 }
 
 export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
@@ -35,6 +48,8 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
   onOpenEditModal,
   onDeletePhone,
   onOpenAddPhone,
+  onAddRepair,
+  onDeleteRepair,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'In Stock' | 'Sold' | 'Returned'>('ALL');
@@ -68,12 +83,16 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
           return new Date(b.purchaseDate).getTime() - new Date(a.purchaseDate).getTime();
         }
         if (sortBy === 'PROFIT_DESC') {
-          const profitA = (a.salePrice || 0) - a.purchasePrice;
-          const profitB = (b.salePrice || 0) - b.purchasePrice;
+          const costA = a.totalCost ?? (a.purchasePrice + (a.repairCost || 0));
+          const costB = b.totalCost ?? (b.purchasePrice + (b.repairCost || 0));
+          const profitA = (a.salePrice || 0) - costA;
+          const profitB = (b.salePrice || 0) - costB;
           return profitB - profitA;
         }
         if (sortBy === 'PRICE_DESC') {
-          return b.purchasePrice - a.purchasePrice;
+          const costA = a.totalCost ?? (a.purchasePrice + (a.repairCost || 0));
+          const costB = b.totalCost ?? (b.purchasePrice + (b.repairCost || 0));
+          return costB - costA;
         }
         if (sortBy === 'NAME_ASC') {
           return a.model.localeCompare(b.model);
@@ -81,6 +100,12 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
         return 0;
       });
   }, [phones, statusFilter, partnerFilter, searchTerm, sortBy]);
+
+  // Keep details modal in sync with phones state (e.g. after adding a repair)
+  const activeDetailsPhone = useMemo(() => {
+    if (!selectedPhoneForDetails) return null;
+    return phones.find((p) => p.id === selectedPhoneForDetails.id) || selectedPhoneForDetails;
+  }, [phones, selectedPhoneForDetails]);
 
   return (
     <div className="space-y-4">
@@ -95,7 +120,7 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
               </span>
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Diiwaanka teleefannada ganacsiga: Qofka keenay (Acquired By) iyo qofka lacagta bixiyay (Paid By)
+              Diiwaanka teleefannada ganacsiga: Gadashada, Dayactirka, Wadarta Lafaha, Iibka, iyo Faa'iidada
             </p>
           </div>
 
@@ -187,29 +212,29 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
             >
               <option value="DATE_DESC">Ugu Dambeeyay</option>
               <option value="PROFIT_DESC">Faa'iidada (Sare)</option>
-              <option value="PRICE_DESC">Qiimaha Lafaha (Sare)</option>
+              <option value="PRICE_DESC">Wadarta Qiimaha (Sare)</option>
               <option value="NAME_ASC">Model-ka (A-Z)</option>
             </select>
           </div>
         </div>
       </div>
 
-      {/* Table Box - EXACT INVENTORY COLUMNS WITH ACQUIRED BY & PAID BY */}
+      {/* Table Box - FULL BREAKDOWN: Purchase Cost, Repair Cost, Total Cost, Sale Price, Profit */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[1020px]">
+          <table className="w-full text-left border-collapse min-w-[1140px]">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                 <th className="py-3 px-3">Phone</th>
                 <th className="py-3 px-3">IMEI</th>
                 <th className="py-3 px-3">Acquired By</th>
                 <th className="py-3 px-3">Paid By (Capital)</th>
-                <th className="py-3 px-3">Purchase Price</th>
+                <th className="py-3 px-3">Purchase Cost</th>
+                <th className="py-3 px-3">Repair Cost</th>
+                <th className="py-3 px-3">Total Cost</th>
                 <th className="py-3 px-3">Sale Price</th>
                 <th className="py-3 px-3">Profit</th>
                 <th className="py-3 px-3">Status</th>
-                <th className="py-3 px-3">Purchase Date</th>
-                <th className="py-3 px-3">Sale Date</th>
                 <th className="py-3 px-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -226,7 +251,11 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
                 filteredPhones.map((phone) => {
                   const isSold = phone.status === 'Sold';
                   const isReturned = phone.status === 'Returned';
-                  const profit = isSold ? (phone.salePrice || 0) - phone.purchasePrice : 0;
+
+                  const purchaseCost = Number(phone.purchasePrice || 0);
+                  const repairCost = Number(phone.repairCost || 0);
+                  const totalCost = phone.totalCost ?? (purchaseCost + repairCost);
+                  const profit = isSold ? (phone.salePrice || 0) - totalCost : 0;
 
                   const funderId = phone.paidBy || phone.capitalOwner || phone.purchasedBy;
                   const acquirerId = phone.acquiredBy || funderId;
@@ -296,12 +325,29 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
                         )}
                       </td>
 
-                      {/* 5. Purchase Price */}
-                      <td className="py-3 px-3 font-black text-slate-900 text-sm">
-                        ${phone.purchasePrice}
+                      {/* 5. Purchase Cost */}
+                      <td className="py-3 px-3 font-bold text-slate-800 text-xs">
+                        ${purchaseCost}
                       </td>
 
-                      {/* 6. Sale Price */}
+                      {/* 6. Repair Cost */}
+                      <td className="py-3 px-3 font-semibold text-xs">
+                        {repairCost > 0 ? (
+                          <span className="inline-flex items-center gap-1 font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                            <Wrench className="w-3 h-3" />
+                            <span>${repairCost}</span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-normal">$0</span>
+                        )}
+                      </td>
+
+                      {/* 7. Total Cost */}
+                      <td className="py-3 px-3 font-black text-slate-900 text-sm">
+                        ${totalCost}
+                      </td>
+
+                      {/* 8. Sale Price */}
                       <td className="py-3 px-3">
                         {isSold ? (
                           <span className="font-black text-slate-900 text-sm">
@@ -312,7 +358,7 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
                         )}
                       </td>
 
-                      {/* 7. Profit */}
+                      {/* 9. Profit */}
                       <td className="py-3 px-3">
                         {isSold ? (
                           <span
@@ -327,7 +373,7 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
                         )}
                       </td>
 
-                      {/* 8. Status */}
+                      {/* 10. Status */}
                       <td className="py-3 px-3">
                         {isSold ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
@@ -347,63 +393,51 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
                         )}
                       </td>
 
-                      {/* 9. Purchase Date */}
-                      <td className="py-3 px-3 text-slate-600 font-medium whitespace-nowrap">
-                        {phone.purchaseDate}
-                      </td>
-
-                      {/* 10. Sale Date */}
-                      <td className="py-3 px-3 text-slate-600 font-medium whitespace-nowrap">
-                        {phone.saleDate || '-'}
-                      </td>
-
                       {/* 11. Actions */}
-                      <td className="py-3 px-3 text-right whitespace-nowrap">
+                      <td className="py-3 px-3 text-right">
                         <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={() => setSelectedPhoneForDetails(phone)}
-                            className="px-2 py-1 rounded-lg text-slate-600 hover:text-blue-600 hover:bg-blue-50 text-xs font-bold transition cursor-pointer flex items-center gap-1"
-                            title="View Phone Details"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition cursor-pointer"
+                            title="Xogta buuxda & Dayactirka"
                           >
-                            <Eye className="w-3.5 h-3.5" />
-                            <span>View</span>
+                            <Eye className="w-4 h-4" />
                           </button>
-
-                          {!isSold && !isReturned && (
-                            <button
-                              onClick={() => onOpenSellModal(phone)}
-                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs cursor-pointer active:scale-95 transition"
-                              title="Sell this phone"
-                            >
-                              <DollarSign className="w-3 h-3" />
-                              <span>Sell</span>
-                            </button>
-                          )}
 
                           {isSold && (
                             <button
                               onClick={() => onOpenReceiptModal(phone)}
-                              className="p-1 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 cursor-pointer transition"
-                              title="Receipt"
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 transition cursor-pointer"
+                              title="Rasiidka iibka"
                             >
-                              <FileText className="w-3.5 h-3.5" />
+                              <FileText className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {!isSold && !isReturned && (
+                            <button
+                              onClick={() => onOpenSellModal(phone)}
+                              className="p-1.5 rounded-lg text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition cursor-pointer font-bold"
+                              title="Iibi teleefankan"
+                            >
+                              <DollarSign className="w-4 h-4" />
                             </button>
                           )}
 
                           <button
                             onClick={() => onOpenEditModal(phone)}
-                            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer transition"
-                            title="Edit"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+                            title="Wax ka beddel"
                           >
-                            <Edit2 className="w-3.5 h-3.5" />
+                            <Edit2 className="w-4 h-4" />
                           </button>
 
                           <button
                             onClick={() => onDeletePhone(phone.id)}
-                            className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer transition"
-                            title="Delete"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                            title="Tirtir"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
                       </td>
@@ -416,10 +450,10 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
         </div>
       </div>
 
-      {/* PHONE DETAILS MODAL */}
+      {/* Phone Details Modal */}
       <PhoneDetailsModal
-        phone={selectedPhoneForDetails}
-        isOpen={Boolean(selectedPhoneForDetails)}
+        phone={activeDetailsPhone}
+        isOpen={!!selectedPhoneForDetails}
         onClose={() => setSelectedPhoneForDetails(null)}
         partners={partners}
         transactions={transactions}
@@ -427,6 +461,8 @@ export const PhoneTableView: React.FC<PhoneTableViewProps> = ({
         onOpenReceiptModal={onOpenReceiptModal}
         onOpenEditModal={onOpenEditModal}
         onDeletePhone={onDeletePhone}
+        onAddRepair={onAddRepair}
+        onDeleteRepair={onDeleteRepair}
       />
     </div>
   );
